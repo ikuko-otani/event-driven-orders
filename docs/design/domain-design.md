@@ -23,13 +23,17 @@ professional work:
   purchasing (issuing purchase orders to suppliers) was also in scope.
 - **Production-management package customization (MCFrame)** for a
   pharmaceutical manufacturer, where I first observed the concept of
-  *inventory reservation* — allocating stock to a specific order.
+  *inventory reservation* — allocating stock to a specific order — and
+  where I first worked on a system handling **multiple corporate entities
+  within a single system**, the origin of the *multi-entity* axis carried
+  in this schema (§3.2).
 - **Finance/accounting web system for a supermarket group** (2015–2019):
   the group's accounting included consolidated reporting across multiple
-  group companies, which is where I first encountered the *multi-entity*
-  axis carried in this schema (§3.2). I do not claim detailed per-entity
-  bookkeeping experience; the multi-entity requirement itself is also a
-  staple of accounting/finance SaaS product descriptions.
+  group companies. This is a related but distinct exposure — cross-company
+  consolidation in financial reporting, not first-hand experience with a
+  single system modeling multiple entities — and does not by itself claim
+  detailed per-entity bookkeeping experience. The multi-entity requirement
+  itself is also a staple of accounting/finance SaaS product descriptions.
 
 **This repository is a personal portfolio project.** It does not reproduce
 any employer's or client's system; it re-models generic domain flows,
