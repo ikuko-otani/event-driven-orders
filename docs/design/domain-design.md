@@ -1,9 +1,8 @@
 # Domain Design — event-driven-orders
 
-> **Version**: 0.1 (draft) — 2026-07-13
-> **Status**: work in progress.
-> This document defines the domain model and event catalog before implementation starts.
-> Broker selection rationale is documented separately in an ADR (planned).
+> **Version**: 0.2 (draft — ORD-001 complete) — 2026-07-13
+> **Status**: ER diagram and event catalog complete (DONE condition for ORD-001).
+> Broker selection rationale, detailed retry/DLQ policy, and edge cases are the subject of a later design iteration (ADR + Saga details, planned: W3).
 
 ---
 
