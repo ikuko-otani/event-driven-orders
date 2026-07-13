@@ -24,6 +24,12 @@ professional work:
 - **Production-management package customization (MCFrame)** for a
   pharmaceutical manufacturer, where I first observed the concept of
   *inventory reservation* — allocating stock to a specific order.
+- **Finance/accounting web system for a supermarket group** (2015–2019):
+  the group's accounting included consolidated reporting across multiple
+  group companies, which is where I first encountered the *multi-entity*
+  axis carried in this schema (§3.2). I do not claim detailed per-entity
+  bookkeeping experience; the multi-entity requirement itself is also a
+  staple of accounting/finance SaaS product descriptions.
 
 **This repository is a personal portfolio project.** It does not reproduce
 any employer's or client's system; it re-models generic domain flows,
@@ -313,8 +319,73 @@ listed in §6.
 
 ## 5. Saga Overview — inventory reservation failure
 
-<!-- TODO: High-level compensation flow only. Detailed Saga / retry / DLQ
-     design is planned for a later design iteration (W3). -->
+> High-level flow only. Retry policy, DLQ handling, and edge cases are the
+> subject of a dedicated design iteration (planned: W3).
+
+### 5.1 Why a Saga (and not a distributed transaction)
+
+The order confirmation spans two services and a broker; there is no shared
+transaction coordinator, and two-phase commit across services would couple
+their availability (one slow participant blocks the other's locks). The
+Saga pattern replaces the global transaction with a **sequence of local
+transactions**, each atomic on its own, where a failure later in the chain
+is answered by a **compensating action** — a new fact that semantically
+cancels an earlier one, never an undo. (The accounting analogy: a posted
+journal entry is corrected by a reversing entry, not by erasure.)
+
+v0.5 uses **choreography** (each service reacts to events; no central
+orchestrator): with two services and one interaction, an orchestrator
+would be pure overhead. The trade-off — choreographed flows get hard to
+follow as the number of steps grows — is documented as the trigger for
+revisiting this choice if the flow ever gains steps.
+
+### 5.2 Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant O as order-api
+    participant K as Kafka
+    participant I as inventory-worker
+
+    C->>O: POST /orders/{id}/confirm
+    O->>O: tx: status PENDING→CONFIRMED + outbox(OrderConfirmed)
+    O-->>C: 200 OK (status=CONFIRMED; reservation is async)
+    O->>K: poller publishes OrderConfirmed
+    K->>I: OrderConfirmed
+    alt all lines available
+        I->>I: tx: reservations + counters + processed_event + outbox(InventoryReserved)
+        I->>K: poller publishes InventoryReserved
+        K->>O: InventoryReserved
+        O->>O: tx: processed_event + status CONFIRMED→RESERVED
+    else insufficient stock (business failure)
+        I->>I: tx: processed_event + outbox(InventoryReservationFailed) — no reservation rows
+        I->>K: poller publishes InventoryReservationFailed
+        K->>O: InventoryReservationFailed
+        O->>O: tx: processed_event + status CONFIRMED→RESERVATION_FAILED (compensation)
+    end
+```
+
+The client observes the outcome by polling `GET /orders/{id}` (the confirm
+endpoint answers as soon as the order is confirmed; the reservation result
+arrives asynchronously).
+
+### 5.3 Business failure vs technical failure
+
+A subtlety that shapes the consumer implementation:
+
+- **Business failure** (insufficient stock) is a *successful* processing
+  outcome. The consumer's transaction **commits** — recording the
+  `processed_events` row and the `InventoryReservationFailed` outbox row,
+  while writing no reservation rows. It must not be retried.
+- **Technical failure** (DB down, crash mid-processing) aborts the whole
+  transaction *including* the `processed_events` insert, so at-least-once
+  redelivery retries it safely. After N failed attempts the event goes to
+  the consumer's DLQ topic for manual inspection (retry count and DLQ
+  operations: W3 design).
+
+Conflating these two — e.g. rolling back everything on insufficient stock —
+would make the consumer retry a permanent business condition forever.
 
 ## 6. Out of Scope / Stretch
 
