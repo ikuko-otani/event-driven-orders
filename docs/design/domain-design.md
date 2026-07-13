@@ -57,12 +57,18 @@ reservation, including the failure path.
   (simplification is the designated de-scoping step if capacity runs short)
 - CI: GitHub Actions (pytest + testcontainers + Redpanda)
 
+**Multi-entity note**: the schema and event envelope carry an `entity_id`
+(sales company) from day one, but v0.5 seeds exactly **one** entity and
+implements no entity-scoped features. Rationale in §3.2 and §6.
+
 **Out of scope / stretch** — deferred deliberately; see §6.
 
 ## 3. ER Diagram
 
 ```mermaid
 erDiagram
+    SALES_ENTITY ||--o{ CUSTOMER : "owns ledger of"
+    SALES_ENTITY ||--o{ ORDER : books
     CUSTOMER ||--o{ ORDER : places
     ORDER ||--|{ ORDER_LINE : contains
     ITEM ||--o{ ORDER_LINE : "ordered as"
@@ -70,15 +76,22 @@ erDiagram
     INVENTORY ||--o{ INVENTORY_RESERVATION : "allocated from"
     ORDER_LINE ||--o| INVENTORY_RESERVATION : "reserved by (by id, no FK)"
 
+    SALES_ENTITY {
+        uuid id PK
+        text code "unique"
+        text name
+    }
     CUSTOMER {
         uuid id PK
+        uuid entity_id FK
         text name
     }
     ORDER {
         uuid id PK
+        uuid entity_id FK
         uuid customer_id FK
         text status "PENDING/CONFIRMED/RESERVED/RESERVATION_FAILED/CANCELLED"
-        text idempotency_key "unique (client-supplied)"
+        text idempotency_key "unique per (entity_id, key)"
         date delivery_date "single date per order (v0.5)"
         timestamptz created_at
     }
@@ -96,12 +109,14 @@ erDiagram
         numeric list_price
     }
     INVENTORY {
+        uuid entity_id PK
         uuid item_id PK
         int quantity_on_hand
         int quantity_reserved
     }
     INVENTORY_RESERVATION {
         uuid id PK
+        uuid entity_id "reference only"
         uuid order_id "reference only"
         uuid item_id FK
         int quantity
@@ -129,33 +144,45 @@ erDiagram
 
 | Schema | Owner service | Tables |
 |---|---|---|
-| `orders` | order-api | customers, orders, order_lines, items, outbox, processed_events |
+| `orders` | order-api | sales_entities, customers, orders, order_lines, items, outbox, processed_events |
 | `inventory` | inventory-worker | inventory, inventory_reservations, outbox, processed_events |
 
 One PostgreSQL instance locally, two schemas. **No cross-schema foreign
 keys and no cross-schema queries** — the only integration path between the
-two services is Kafka. `item_id` values in the `inventory` schema reference
-the item master by convention only (seeded consistently), not by FK.
-Both services own an `outbox` and a `processed_events` table because both
-act as event producer *and* consumer.
+two services is Kafka. `item_id` / `entity_id` values in the `inventory`
+schema reference the masters by convention only (seeded consistently), not
+by FK. Both services own an `outbox` and a `processed_events` table because
+both act as event producer *and* consumer.
 
 ### 3.2 Entity notes
 
-- **customers** — seeded master data; no CRUD API in v0.5. Exists to keep
-  the FK design realistic instead of a free-text customer name.
-  De-scoping candidate if capacity runs short.
+- **sales_entities** — master of sales companies (corporate entities), the
+  "multi-entity" axis common in accounting/finance SaaS. v0.5 seeds exactly
+  one entity and implements no entity-scoped features. The `entity_id`
+  column is nevertheless baked into the schema and the event envelope from
+  day one: retrofitting it later means rewriting every table and every
+  event, while deferring only the *functional* layer (data-isolation
+  guarantees, per-entity document numbering, API scoping) keeps the
+  de-scoping decision reversible (§6).
+- **customers** — seeded master data, scoped to a sales entity; no CRUD API
+  in v0.5. Exists to keep the FK design realistic instead of a free-text
+  customer name. De-scoping candidate if capacity runs short.
 - **orders** — aggregate root of order intake. `status` lifecycle:
   `PENDING → CONFIRMED → RESERVED | RESERVATION_FAILED`; `CANCELLED` is
   reserved for future user-initiated cancellation. `idempotency_key` is
-  the HTTP-level deduplication key (unique, client-supplied; the
-  event-level mechanism is `processed_events`, see §4). Delivery date is
-  a single header-level date in v0.5.
+  the HTTP-level deduplication key (client-supplied, unique per
+  `(entity_id, idempotency_key)`; the event-level mechanism is
+  `processed_events`, see §4.4). Delivery date is a single header-level
+  date in v0.5.
 - **order_lines** — `unit_price` is a snapshot of the item's list price at
   order time: an accepted order must not change retroactively when the
   price master changes.
 - **items** — owned by order-api. `code` is the human-facing business key;
-  `id` (UUID) is the technical key used in FKs and event payloads.
-- **inventory** — one row per item. Available quantity =
+  `id` (UUID) is the technical key used in FKs and event payloads. The
+  catalog is shared across sales entities in v0.5; per-entity catalogs are
+  part of the deferred multi-entity functional layer (§6).
+- **inventory** — one row per `(entity_id, item_id)`: each sales entity
+  holds its own stock. Available quantity =
   `quantity_on_hand − quantity_reserved`. The row is locked
   (`SELECT … FOR UPDATE`) during reservation so the counter update and the
   reservation-row insert commit atomically.
@@ -179,9 +206,110 @@ act as event producer *and* consumer.
 
 ## 4. Event Catalog
 
-<!-- TODO: envelope standard, topic/partition-key design, one entry per
-     event: name, producer/consumers, payload summary, trigger condition,
-     idempotency design. -->
+### 4.1 Envelope standard
+
+All events share one envelope; `payload` differs per event type.
+
+```json
+{
+  "event_id": "0198c0de-…",
+  "event_type": "OrderConfirmed",
+  "event_version": 1,
+  "occurred_at": "2026-08-15T09:30:00Z",
+  "entity_id": "<sales_entity_id>",
+  "aggregate_type": "Order",
+  "aggregate_id": "<order_id>",
+  "payload": {}
+}
+```
+
+- `event_id` is the outbox row's UUID and is the deduplication key (§4.4).
+- `event_version` is always `1` in v0.5; the field exists so payload-schema
+  evolution has a defined place to happen (no schema registry in v0.5 —
+  broker ADR, planned).
+- Event names are **past-tense facts** (`OrderConfirmed`, never
+  `ConfirmOrder`): an event records something that already happened and
+  cannot be rejected. Failures are therefore handled by appending
+  compensating facts, not by undoing (§5).
+
+### 4.2 Topics and partitioning
+
+| Topic | Producer | Contents |
+|---|---|---|
+| `orders.events` | order-api | all order-aggregate events |
+| `inventory.events` | inventory-worker | all inventory-aggregate events |
+| `<topic>.<consumer>.dlq` | (consumer) | dead-letter topic per consumer |
+
+- **Message key = `order_id`.** Kafka guarantees ordering only within a
+  partition; keying by order id keeps all events about one order in order.
+- **One topic per service, not per event type**: if events of the same
+  aggregate were spread across topics, the per-order ordering guarantee
+  would be lost.
+
+### 4.3 Events (v0.5)
+
+#### OrderConfirmed
+
+| | |
+|---|---|
+| Producer → consumers | order-api → inventory-worker |
+| Trigger | `POST /orders/{id}/confirm` transitions the order `PENDING → CONFIRMED`; the outbox row is written in the same DB transaction |
+| Payload | `order_id`, `customer_id`, `delivery_date`, `lines: [{item_id, quantity}]` |
+
+Payload style is **event-carried state transfer**: the consumer gets
+everything it needs (the order lines) from the event itself and never
+calls order-api back. A notification-style event (id only) would
+reintroduce a synchronous dependency and defeat the purpose of the async
+design; the price is that the payload schema becomes a contract, tracked
+by `event_version`.
+
+#### InventoryReserved
+
+| | |
+|---|---|
+| Producer → consumers | inventory-worker → order-api |
+| Trigger | **All** lines of the order were reserved in one local DB transaction (all-or-nothing per order) |
+| Payload | `order_id`, `reservations: [{item_id, quantity, reservation_id}]` |
+
+On consumption, order-api transitions the order `CONFIRMED → RESERVED`.
+
+#### InventoryReservationFailed
+
+| | |
+|---|---|
+| Producer → consumers | inventory-worker → order-api |
+| Trigger | At least one line had insufficient available stock; the whole reservation transaction rolled back, so no partial reservations remain |
+| Payload | `order_id`, `failures: [{item_id, requested, available}]` |
+
+On consumption, order-api transitions the order
+`CONFIRMED → RESERVATION_FAILED` (the Saga compensation, §5).
+
+The payload deliberately carries `requested` vs `available` per failed
+line — exactly the information an operator (or a future automated
+order-splitting feature, §6) needs to decide how to split the order into
+a fulfillable part and a backorder. The event design anticipates that
+capability without implementing it.
+
+### 4.4 Idempotency design
+
+Two independent layers:
+
+| Layer | Key | Store | Protects against |
+|---|---|---|---|
+| HTTP | client-supplied `Idempotency-Key` header, unique per `(entity_id, key)` | Redis | client retries creating duplicate orders |
+| Event | `event_id` (outbox row UUID) | `processed_events` | at-least-once redelivery (outbox poller resend, consumer restart/rebalance) |
+
+**Rejected alternative** — deduplicating on a business key
+(`order_id` + state transition): it cannot distinguish a legitimate
+re-processing of the same order (e.g. a future cancel-and-reconfirm flow)
+from a duplicate delivery. The outbox supplies a fresh UUID per event for
+free, so `event_id` deduplication is both simpler and more precise.
+
+### 4.5 Reserved future events (not implemented in v0.5)
+
+`OrderCancelled`, `OrderShipped`, `InvoiceIssued` — names reserved so the
+status model and topic layout can grow toward the shipment/billing stages
+listed in §6.
 
 ## 5. Saga Overview — inventory reservation failure
 
@@ -193,7 +321,9 @@ act as event producer *and* consumer.
 | Item | Why deferred |
 |---|---|
 | Purchasing (buy side) | Existed in the source domain, but v0.5 focuses on the event-driven sell-side flow; purchasing adds entities without adding new architectural lessons |
-| Shipment & billing | Downstream stages; event names are reserved so the status model can grow (§4) |
+| Shipment & billing | Downstream stages; event names are reserved so the status model can grow (§4.5) |
+| Multi-entity **functional layer** (data isolation, per-entity numbering, API scoping) | The `entity_id` column and envelope field are baked in from day one (retrofitting would touch every table and event); the functional layer is deferred work and the designated **first de-scoping candidate**. Baking in the column keeps that decision reversible |
+| Order splitting / backorder | The realistic business follow-up to a failed reservation; deferred because partial fulfillment multiplies Saga states. `InventoryReservationFailed` already carries requested-vs-available, so the capability can be added without changing events |
 | Per-line delivery dates (split delivery) | Requirement not confirmed in the source domain; a header-level date is enough for v0.5 |
 | Item-master sync events | v0.5 syncs master data via seeds; event-carried master sync is a stretch topic |
 | Debezium CDC | Custom poller chosen deliberately (broker ADR, planned) |
