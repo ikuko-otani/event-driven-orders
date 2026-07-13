@@ -84,8 +84,10 @@ erDiagram
         uuid id PK
         uuid entity_id FK
         uuid customer_id FK
+        text order_number "human-facing key, unique per entity_id"
         text status "PENDING/CONFIRMED/RESERVED/RESERVATION_FAILED/CANCELLED"
         text idempotency_key "unique per (entity_id, key)"
+        text currency "ISO 4217, single seeded value in v0.5"
         date delivery_date "single date per order (v0.5)"
         timestamptz created_at
     }
@@ -156,7 +158,9 @@ Both services own an `outbox` and a `processed_events` table because both act as
   De-scoping candidate if capacity runs short.
 - **orders** — aggregate root of order intake.
   `status` lifecycle: `PENDING → CONFIRMED → RESERVED | RESERVATION_FAILED`; `CANCELLED` is reserved for future user-initiated cancellation.
+  `order_number` is the human-facing business key (unique per `entity_id`), separate from the technical `id`; it is included from v0.5 — even though no numbering scheme beyond a simple sequence exists yet — because retrofitting it later would require backfilling every existing row with a number.
   `idempotency_key` is the HTTP-level deduplication key (client-supplied, unique per `(entity_id, idempotency_key)`; the event-level mechanism is `processed_events`, see §4.4).
+  `currency` (ISO 4217) is seeded as a single value in v0.5; it is carried on the order because a monetary amount recorded without its currency cannot be reinterpreted later without a breaking change to the event payload.
   Delivery date is a single header-level date in v0.5.
 - **order_lines** — `unit_price` is a snapshot of the item's list price at order time: an accepted order must not change retroactively when the price master changes.
 - **items** — owned by order-api.
@@ -218,7 +222,7 @@ All events share one envelope; `payload` differs per event type.
 |---|---|
 | Producer → consumers | order-api → inventory-worker |
 | Trigger | `POST /orders/{id}/confirm` transitions the order `PENDING → CONFIRMED`; the outbox row is written in the same DB transaction |
-| Payload | `order_id`, `customer_id`, `delivery_date`, `lines: [{item_id, quantity}]` |
+| Payload | `order_id`, `order_number`, `customer_id`, `delivery_date`, `currency`, `lines: [{item_id, quantity}]` |
 
 Payload style is **event-carried state transfer**: the consumer gets everything it needs (the order lines) from the event itself and never calls order-api back.
 A notification-style event (id only) would reintroduce a synchronous dependency and defeat the purpose of the async design; the price is that the payload schema becomes a contract, tracked by `event_version`.
@@ -319,14 +323,24 @@ Conflating these two — e.g. rolling back everything on insufficient stock — 
 
 ## 6. Out of Scope / Stretch
 
-| Item | Why deferred |
-|---|---|
-| Purchasing (buy side) | Existed in the source domain, but v0.5 focuses on the event-driven sell-side flow; purchasing adds entities without adding new architectural lessons |
-| Shipment & billing | Downstream stages; event names are reserved so the status model can grow (§4.5) |
-| Multi-entity **functional layer** (data isolation, per-entity numbering, API scoping) | The `entity_id` column and envelope field are baked in from day one (retrofitting would touch every table and event); the functional layer is deferred work and the designated **first de-scoping candidate**. Baking in the column keeps that decision reversible |
-| Order splitting / backorder | The realistic business follow-up to a failed reservation; deferred because partial fulfillment multiplies Saga states. `InventoryReservationFailed` already carries requested-vs-available, so the capability can be added without changing events |
-| Per-line delivery dates (split delivery) | Requirement not confirmed in the source domain; a header-level date is enough for v0.5 |
-| Item-master sync events | v0.5 syncs master data via seeds; event-carried master sync is a stretch topic |
-| Debezium CDC | Custom poller chosen deliberately (broker ADR, planned) |
-| CQRS read model | Stretch after v0.5 close |
-| Public deployment | Handled by a separate AWS + Terraform task (October) |
+Some deferred items still leave a mark on the v0.5 schema: a column or envelope field is added now even though the feature built on top of it is not.
+
+> A field is baked in now when retrofitting it later would cascade into a primary key, a unique constraint, or an event-payload contract, or would require backfilling existing rows with an interpretation that cannot be recovered after the fact.
+> It is left out (no schema footprint) when it can be added later as a plain nullable column with no such cascade.
+> The test is never "might want it later" — a schema this thin cannot afford speculative columns either.
+
+`entity_id`, `order_number`, and `orders.currency` are the fields baked in under this test so far.
+See the **Schema footprint** column below.
+
+| Item | Why deferred | Schema footprint |
+|---|---|---|
+| Purchasing (buy side) | Existed in the source domain, but v0.5 focuses on the event-driven sell-side flow; purchasing adds entities without adding new architectural lessons | None |
+| Shipment & billing | Downstream stages; event names are reserved so the status model can grow (§4.5) | None (new tables when built) |
+| Multi-entity **functional layer** (data isolation, per-entity numbering, API scoping) | The `entity_id` column and envelope field are baked in from day one (retrofitting would touch every table and event); the functional layer is deferred work and the designated **first de-scoping candidate**. Baking in the column keeps that decision reversible | `entity_id` on all tables and the envelope; `order_number` exists but uses a plain sequence, not a per-entity scheme |
+| Multi-currency support (FX conversion, multi-currency reporting) | v0.5 seeds a single currency; full support pairs with Flagship #1's multi-currency work (a separate portfolio project) and is out of scope here | `orders.currency` (single seeded value, no conversion logic) |
+| Order splitting / backorder | The realistic business follow-up to a failed reservation; deferred because partial fulfillment multiplies Saga states. `InventoryReservationFailed` already carries requested-vs-available, so the capability can be added without changing events | None |
+| Per-line delivery dates (split delivery) | Requirement not confirmed in the source domain; a header-level date is enough for v0.5 | None |
+| Item-master sync events | v0.5 syncs master data via seeds; event-carried master sync is a stretch topic | None |
+| Debezium CDC | Custom poller chosen deliberately (broker ADR, planned) | N/A |
+| CQRS read model | Stretch after v0.5 close | N/A |
+| Public deployment | Handled by a separate AWS + Terraform task (October) | N/A |
