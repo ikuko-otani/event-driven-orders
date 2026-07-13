@@ -327,9 +327,9 @@ Some deferred items still leave a mark on the v0.5 schema: a column or envelope 
 
 > A field is baked in now when retrofitting it later would cascade into a primary key, a unique constraint, or an event-payload contract, or would require backfilling existing rows with an interpretation that cannot be recovered after the fact.
 > It is left out (no schema footprint) when it can be added later as a plain nullable column with no such cascade.
-> The test is never "might want it later" — a schema this thin cannot afford speculative columns either.
+> The criterion is never "might want it later" — a schema this thin cannot afford speculative columns either.
 
-`entity_id`, `order_number`, and `orders.currency` are the fields baked in under this test so far.
+`entity_id`, `order_number`, and `orders.currency` are the fields baked in under this criterion so far.
 See the **Schema footprint** column below.
 
 | Item | Why deferred | Schema footprint |
