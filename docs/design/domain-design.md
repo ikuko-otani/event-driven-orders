@@ -51,6 +51,21 @@ project treats that as a first-class design constraint:
 > via factories and/or by replaying a recorded event sequence — never by
 > hand-crafted one-off fixtures.
 
+Two complementary techniques satisfy this constraint:
+
+- **Factories** build a target state directly (e.g., an order already in
+  `RESERVATION_FAILED` state) through a single parameterized helper,
+  hiding the cross-table consistency logic in one place instead of
+  re-deriving it by hand in every test.
+- **Event replay** builds the same state by publishing real domain events
+  (e.g. `OrderConfirmed`) and letting the real consumers process them,
+  exercising the production code path itself rather than a test-only
+  shortcut. This is the higher-fidelity option and the natural fit for
+  testing the Saga/outbox/idempotency machinery this project centers on.
+
+Factories are the default for unit- and API-level tests; event replay is
+reserved for integration tests that verify the Saga wiring end to end.
+
 ## 2. Scope (v0.5)
 
 v0.5 models the **sell side only**: order intake and inventory
