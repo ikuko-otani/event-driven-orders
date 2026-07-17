@@ -1,8 +1,8 @@
 # Domain Design — event-driven-orders
 
-> **Version**: 0.2 (draft — ORD-001 complete) — 2026-07-13
-> **Status**: ER diagram and event catalog complete (DONE condition for ORD-001).
-> Broker selection rationale, detailed retry/DLQ policy, and edge cases are the subject of a later design iteration (ADR + Saga details, planned: W3).
+> **Version**: 0.3 (draft — ORD-003 complete) — 2026-07-17
+> **Status**: ER diagram and event catalog (v0.2); Saga reliability details — outbox poller, retry/DLQ, edge cases — and scale assumptions (v0.3).
+> Broker selection rationale is the subject of a later ADR.
 
 ---
 
@@ -52,9 +52,9 @@ v0.5 models the **sell side only**: order intake and inventory reservation, incl
 - CI: GitHub Actions (pytest + testcontainers + Redpanda)
 
 **Multi-entity note**: the schema and event envelope carry an `entity_id` (sales company) from day one, but v0.5 seeds exactly **one** entity and implements no entity-scoped features.
-Rationale in §3.2 and §6.
+Rationale in §3.2 and §7.
 
-**Out of scope / stretch** — deferred deliberately; see §6.
+**Out of scope / stretch** — deferred deliberately; see §7.
 
 ## 3. ER Diagram
 
@@ -151,7 +151,7 @@ Both services own an `outbox` and a `processed_events` table because both act as
 
 - **sales_entities** — master of sales companies (corporate entities), the "multi-entity" axis common in accounting/finance SaaS.
   v0.5 seeds exactly one entity and implements no entity-scoped features.
-  The `entity_id` column is nevertheless baked into the schema and the event envelope from day one: retrofitting it later means rewriting every table and every event, while deferring only the *functional* layer (data-isolation guarantees, per-entity document numbering, API scoping) keeps the de-scoping decision reversible (§6).
+  The `entity_id` column is nevertheless baked into the schema and the event envelope from day one: retrofitting it later means rewriting every table and every event, while deferring only the *functional* layer (data-isolation guarantees, per-entity document numbering, API scoping) keeps the de-scoping decision reversible (§7).
 - **customers** — seeded master data, scoped to a sales entity; no CRUD API in v0.5.
   Exists to keep the FK design realistic instead of a free-text customer name.
   De-scoping candidate if capacity runs short.
@@ -164,7 +164,7 @@ Both services own an `outbox` and a `processed_events` table because both act as
 - **order_lines** — `unit_price` is a snapshot of the item's list price at order time: an accepted order must not change retroactively when the price master changes.
 - **items** — owned by order-api.
   `code` is the human-facing business key; `id` (UUID) is the technical key used in FKs and event payloads.
-  The catalog is shared across sales entities in v0.5; per-entity catalogs are part of the deferred multi-entity functional layer (§6).
+  The catalog is shared across sales entities in v0.5; per-entity catalogs are part of the deferred multi-entity functional layer (§7).
 - **inventory** — one row per `(entity_id, item_id)`: each sales entity holds its own stock.
   Available quantity = `quantity_on_hand − quantity_reserved`.
   The row is locked (`SELECT … FOR UPDATE`) during reservation so the counter update and the reservation-row insert commit atomically.
@@ -246,7 +246,7 @@ On consumption, order-api transitions the order `CONFIRMED → RESERVED`.
 
 On consumption, order-api transitions the order `CONFIRMED → RESERVATION_FAILED` (the Saga compensation, §5).
 
-The payload deliberately carries `requested` vs `available` per failed line — exactly the information an operator (or a future automated order-splitting feature, §6) needs to decide how to split the order into a fulfillable part and a backorder.
+The payload deliberately carries `requested` vs `available` per failed line — exactly the information an operator (or a future automated order-splitting feature, §7) needs to decide how to split the order into a fulfillable part and a backorder.
 The event design anticipates that capability without implementing it.
 
 ### 4.4 Idempotency design
@@ -263,12 +263,11 @@ The outbox supplies a fresh UUID per event for free, so `event_id` deduplication
 
 ### 4.5 Reserved future events (not implemented in v0.5)
 
-`OrderCancelled`, `OrderShipped`, `InvoiceIssued` — names reserved so the status model and topic layout can grow toward the shipment/billing stages listed in §6.
+`OrderCancelled`, `OrderShipped`, `InvoiceIssued` — names reserved so the status model and topic layout can grow toward the shipment/billing stages listed in §7.
 
 ## 5. Saga Overview — inventory reservation failure
 
-> High-level flow only.
-> Retry policy, DLQ handling, and edge cases are the subject of a dedicated design iteration (planned: W3).
+> §5.1–5.3 give the high-level flow; §5.4–5.7 add the reliability machinery: outbox poller design, retry policy, DLQ operations, and edge cases.
 
 ### 5.1 Why a Saga (and not a distributed transaction)
 
@@ -316,11 +315,266 @@ A subtlety that shapes the consumer implementation:
   The consumer's transaction **commits** — recording the `processed_events` row and the `InventoryReservationFailed` outbox row, while writing no reservation rows.
   It must not be retried.
 - **Technical failure** (DB down, crash mid-processing) aborts the whole transaction *including* the `processed_events` insert, so at-least-once redelivery retries it safely.
-  After N failed attempts the event goes to the consumer's DLQ topic for manual inspection (retry count and DLQ operations: W3 design).
+  After N failed attempts the event goes to the consumer's DLQ topic for manual inspection (retry policy: §5.5; DLQ operations: §5.6).
 
 Conflating these two — e.g. rolling back everything on insufficient stock — would make the consumer retry a permanent business condition forever.
 
-## 6. Out of Scope / Stretch
+### 5.4 Outbox poller design
+
+Each service runs its own poller as a separate process (order-api poller and inventory-worker poller), publishing that service's `outbox` rows to Kafka.
+
+```
+loop forever:
+    rows = SELECT * FROM outbox
+           WHERE published_at IS NULL
+           ORDER BY created_at
+           LIMIT :batch_size            -- 100
+    for row in rows:
+        produce(topic, key=row.aggregate_id, value=envelope(row))
+    flush()                             -- wait for broker acks
+    UPDATE outbox SET published_at = now()
+        WHERE id IN (:acked_ids)        -- successes only, one statement
+    if len(rows) < batch_size:
+        sleep(:poll_interval)           -- 100 ms; skip sleep while draining backlog
+```
+
+**Publish before mark.**
+The order of steps is the at-least-once guarantee itself: a crash after `flush()` but before the `UPDATE` re-publishes those rows on restart (duplicate — absorbed by `processed_events`, §4.4), whereas the reverse order (mark, then publish) would lose events that were marked but never sent — at-most-once.
+The crash window is analyzed in §5.7.
+
+**Polling interval: 100 ms.**
+Polling adds on average half the interval (worst case: the full interval) to event latency, and the confirm→reserved round trip crosses **two** pollers (order-api's and inventory-worker's), so the interval enters the end-to-end latency budget twice.
+100 ms keeps the worst-case polling contribution at ~200 ms; the idle-cycle query is a cheap scan of a small partial index (below), so the DB cost of polling 10×/s is negligible.
+Revisit against the p99 target in §6 (and against W16 load-test measurements).
+
+> Rejected alternative — PostgreSQL `LISTEN`/`NOTIFY` push instead of polling: notifications are lost while the listener is disconnected, so a polling fallback is required anyway; v0.5 keeps polling only.
+
+**Batch size: 100.**
+At the assumed throughput (§6) an idle-free cycle carries ~50 events, so 100 gives headroom; during a backlog (e.g. after poller downtime) the loop skips the sleep and drains at full speed.
+Both `poll_interval` and `batch_size` are externalized configuration, to be re-tuned from W16 load-test results.
+
+**Producer configuration: `enable.idempotence=true` (implies `acks=all`).**
+The at-least-once claim in §3.2 silently depends on this: with `acks=0` the producer reports success without broker confirmation, so the poller would mark rows as published that the broker never received — at-most-once.
+`acks=all` closes the remaining loss window of `acks=1` (leader failure before replication).
+Idempotence additionally deduplicates the producer's *internal* retries on the broker (an ack lost in the network would otherwise create a second copy) and preserves send order under retries — reducing duplicates at the source even though `processed_events` would absorb them anyway.
+
+**Marking: successes only, one `UPDATE` per batch.**
+After `flush()`, only rows whose ack was confirmed are marked; failed rows keep `published_at IS NULL` and are retried on the next cycle automatically — the outbox table doubles as the publish-retry queue, so no separate retry machinery exists on the producer side.
+Ordering under partial failure is discussed in §5.7.
+
+**Single poller instance per service, by design.**
+The poller is a singleton; this is an operational rule, not enforced by code.
+Its availability requirement is soft: a dead poller delays events but never loses them (rows accumulate in the outbox and are drained on restart), so a restart-on-crash supervisor is sufficient.
+
+> Rejected alternative — multiple pollers with `SELECT … FOR UPDATE SKIP LOCKED`: the idiom removes row contention, but rows of the same aggregate can then be published by different pollers in any order, breaking the per-order ordering guarantee of §4.2; recovering it would require aggregate-affine work assignment, which is orchestration complexity v0.5 has no throughput justification for.
+
+**Supporting index.**
+`CREATE INDEX outbox_unpublished ON outbox (created_at) WHERE published_at IS NULL` — the poller's hot query scans only unpublished rows, and the index stays near-empty in steady state.
+Published rows are retained for audit in v0.5; a retention/cleanup job is deliberately deferred.
+
+### 5.5 Retry policy (technical failures)
+
+Everything in this section applies to **technical failures only**; a business failure commits and is final (§5.3).
+
+**Mechanism: in-process blocking retry.**
+On an exception, the consumer retries the message in place — sleep, re-run the processing transaction — without committing the offset and without moving on.
+Retry is reserved for *possibly-transient* failures; a failure that is deterministic by construction (e.g. the message cannot be deserialized) skips the retry cycle and goes straight to the DLQ (§5.7).
+Later messages in the partition wait behind it (head-of-line blocking), which is accepted deliberately:
+
+- Most technical failures are **environmental**, not message-specific: if the DB is down, every subsequent message would fail identically, so there is nothing useful to unblock.
+- Blocking is the only variant that preserves the per-order ordering guarantee of §4.2 for free.
+
+> Rejected alternative — retry topics (`…retry-5s`, `…retry-1m`, …) as used in high-throughput deployments: the main partition keeps flowing, but events of the same key overtake each other while one sits in a delay topic, breaking per-order ordering; it also roughly doubles the topic/consumer surface.
+> Nothing at this project's scale justifies that trade.
+
+**Schedule: 5 attempts total (1 initial + 4 retries), exponential backoff 1 s → 2 s → 4 s → 8 s, full jitter.**
+Total worst-case wait is ~15 s.
+The jitter prevents synchronized retry spikes from multiple consumers hammering a recovering DB at the same instant.
+
+**Upper bound.**
+The schedule is not free to grow: a consumer that does not call `poll()` within `max.poll.interval.ms` (default 5 min) is evicted from the group, its partitions are rebalanced away, and the same message is redelivered elsewhere — a retry loop disguised as progress.
+Rule: *(single-attempt processing time + total backoff) must stay well below `max.poll.interval.ms`*.
+~15 s against 5 min leaves ample margin; if the schedule is ever lengthened, both values must move together.
+
+**Retry count lives in a local variable of the consumer's retry loop** — nowhere else.
+If the process crashes mid-retry, the count resets and the redelivered message starts a fresh cycle; this is accepted because exception-type failures are bounded by the counter, and failures that kill the process outright are the poison-message case (§5.7).
+
+> Rejected alternative — persisting the count in the DB or in republished message headers: the DB is the very component most likely to be failing during a retry, and headers require republishing (the retry-topic machinery rejected above).
+
+**After the last attempt fails, the message goes to the consumer's DLQ (§5.6), and only then is the offset committed.**
+
+### 5.6 DLQ operations
+
+One DLQ topic per (source topic, consumer) pair, named `<topic>.<consumer>.dlq` (§4.2) — e.g. `orders.events.inventory-worker.dlq`.
+Business failures never enter a DLQ; they are committed outcomes, not errors.
+
+**Message format: the original message, byte-for-byte, with diagnostics in Kafka headers.**
+Keeping the payload untouched means re-injection is a plain republish with no unwrap step.
+Headers carry: original topic / partition / offset, exception class and message, attempt count, failure timestamp, consumer name.
+
+**Producing to the DLQ and committing.**
+The offset of the failed message is committed only after the DLQ producer confirms the ack (idempotent producer, same configuration as §5.4).
+If the DLQ publish itself fails — usually meaning Kafka as a whole is unhealthy — the consumer crashes without committing and lets the supervisor restart it: the message is redelivered later, and no code path exists in which it is silently dropped.
+
+**Re-injection runbook.**
+
+1. **Detect** — DLQ depth > 0 is an operator signal.
+   v0.5 checks manually (console consumer); a metric + alert on DLQ depth is the designated growth path once observability lands.
+2. **Inspect** — read the DLQ messages and their diagnostic headers; classify the cause: environmental (DB outage window) vs message-specific (bug, malformed payload).
+3. **Fix the root cause first** — restore the infrastructure, or deploy the code fix.
+   Re-injecting before the cause is fixed only round-trips the message back into the DLQ.
+4. **Re-inject** — a small CLI script consumes the DLQ and republishes each original value to the **original topic with the original key** (`order_id`), so partition assignment and per-order ordering resume as if the event had just been published.
+   The script supports selecting a subset (by `event_id` or offset range) for the message-specific case.
+5. **Safety argument** — the re-injected event carries its original `event_id`, so even if the failed attempt had actually committed before crashing, `processed_events` (§4.4) absorbs the duplicate.
+   **Re-injection is therefore always safe; when in doubt, re-inject.**
+   A message that fails again simply travels the same §5.5 cycle back into the DLQ — no new failure mode.
+
+Note that step 5 is not an operational convention but a *consequence of the idempotency design*: the same `event_id` deduplication that absorbs at-least-once redelivery makes manual recovery idempotent too.
+DLQ topic retention is set comfortably longer than any realistic manual response time (14 days) so messages cannot expire while an incident is still being worked.
+
+### 5.7 Edge cases
+
+Each case below follows the same shape: *scenario → what actually happens → which existing mechanism absorbs it (or which new rule this section adds)*.
+The recurring theme is that publish-before-mark (§5.4) and commit-before-offset (below) convert every crash window into a **duplicate**, and duplicates all drain into one mechanism: `processed_events` (§4.4).
+
+#### Poller crash (re-send before the `published_at` mark)
+
+| Crash position in the §5.4 loop | Consequence |
+|---|---|
+| after `SELECT`, before `produce` | nothing sent, rows unmarked — clean re-run, no effect |
+| mid-`flush` (some acks in, some not) | sent-but-unmarked rows re-published on restart — duplicates |
+| after `flush`, before the `UPDATE` | same: re-published on restart — duplicates |
+
+Choosing publish-before-mark already converted the failure mode from *loss* to *duplication*; this table just enumerates the windows.
+
+One caveat matters: the idempotent producer (§5.4) deduplicates only retries **within one producer session**.
+A restarted poller has a new producer id, so restart re-sends are *not* deduplicated at the broker.
+The division of responsibility is therefore: producer idempotence is a source-side optimization; **the consumer's `processed_events` is the actual guarantee**, and it is the only mechanism that spans process restarts.
+
+#### Double publish — inventory of every duplicate path
+
+| # | Duplicate source | Suppressed / absorbed by |
+|---|---|---|
+| 1 | poller crash after `flush`, before mark (above) | `processed_events` |
+| 2 | producer internal retry after a lost ack | idempotent producer (broker-side, same session) |
+| 3 | partial-failure batch: an acked row left unmarked (§5.4) | `processed_events` |
+| 4 | operational error: two poller instances running | `processed_events` (ordering hazard noted in §5.4) |
+| 5 | consumer redelivery (crash/rebalance before offset commit) | `processed_events` |
+| 6 | DLQ re-injection of an already-processed event (§5.6) | `processed_events` |
+
+Every path except #2 converges on the same table.
+The insert into `processed_events` shares the transaction with the business change, which is exactly what turns at-least-once *delivery* into effectively-once *processing*.
+
+Upstream of the outbox, the same question exists at the HTTP layer: a client retrying `POST /orders/{id}/confirm` must not insert a second outbox row.
+It does not: the confirm endpoint is guarded by the status machine (`PENDING → CONFIRMED` only; an already-`CONFIRMED` order returns 200 without writing anything).
+
+#### Consumer offset-commit ordering
+
+> **Rule: the DB transaction (business change + `processed_events` + any outbox rows) commits first; the Kafka offset is committed only after.
+> `enable.auto.commit` is disabled.**
+
+The reverse order is the one mistake this design cannot absorb: if the offset is committed and the process dies before the DB commit, Kafka considers the message consumed and never redelivers it — no `processed_events` row was written, but none will ever be checked, because the message never arrives again.
+The deduplication machinery is silently bypassed and delivery degrades to at-most-once.
+
+With the correct order, the crash window (DB committed, offset not yet) produces a redelivery, which is duplicate path #5 above — absorbed.
+Put differently: **this window is the reason `processed_events` exists.**
+The window cannot be closed, so it is made safe instead.
+
+#### Event order reversal
+
+Per-order ordering rests on key = `order_id` → one partition (§4.2).
+The paths that could still reorder events, and why v0.5 is safe on each:
+
+- **Cross-cycle re-publish by the poller** — if two unpublished events for one order coexisted and the older one failed to send while the newer succeeded, the older would arrive late.
+  In v0.5 this is structurally impossible: the Saga emits each event only after consuming the previous one, so **at most one event per order is unpublished at any time**.
+  Within a single cycle, the idempotent producer preserves partition order under retries and fails subsequent sends on a fatal sequence gap, so no overtaking occurs there either.
+- **DLQ re-injection arriving after later events of the same order** — in v0.5 a DLQ'd event means that order's Saga is stalled, so no later events exist to be overtaken.
+- **State-machine guard as defense in depth** — should an event nevertheless arrive in a state that does not expect it (e.g. `InventoryReserved` for an order already in `RESERVATION_FAILED`), the consumer logs a warning, records the event in `processed_events`, and changes nothing.
+  Retrying would be meaningless (the mismatch is deterministic), and the DLQ is wrong too: §5.6 defines the DLQ as holding messages that can succeed after a fix, which this is not.
+
+> **Constraint carried forward**: both bullets above lean on "one outstanding event per order".
+> The moment an aggregate can have several events in flight (`OrderCancelled` racing `OrderConfirmed`, §4.5), cross-cycle re-publish and re-injection ordering must be re-analyzed.
+> This is a documented precondition, not a solved problem.
+
+#### Poison message
+
+A poison message fails deterministically on every attempt.
+Three grades, by how much damage it does:
+
+- **(a) Throws an exception** — the normal §5.5 cycle handles it: 5 attempts (~15 s of bounded blocking), then DLQ, offset committed, partition flows again.
+- **(b) Cannot be deserialized** — retrying a parse failure is pointless by construction, so it skips retry and goes straight to the DLQ (§5.5).
+  Since the envelope (and thus `event_id`) may be unreadable, the raw bytes are shipped as-is with the diagnostic headers.
+- **(c) Kills the process** (OOM, native crash) — the worst case, and the accepted weakness of the in-memory retry count (§5.5): every crash resets the count, so redelivery → crash loops forever and the partition stalls.
+  v0.5 answers with **documented residual risk plus a manual runbook**, not machinery: the supervisor's restart backoff slows the loop, and the operator copies the message to the DLQ by hand, advances the group's committed offset past it (`kafka-consumer-groups --reset-offsets`), and restarts the consumer.
+
+> Rejected alternative for (c) — a persistent (DB-backed) retry counter would stop the loop automatically, but re-introduces the failure-path DB dependency already rejected in §5.5, to defend against the rarest failure grade.
+> At this project's scale, a runbook is the honest answer.
+
+## 6. Scale Assumptions
+
+Everything in this section is an **assumption, not a measurement**.
+Each number is stated together with its derivation, so that when the W16 locust load test produces real measurements, the assumptions can be swapped out and the conclusions recomputed — rather than the section being rewritten from scratch.
+
+### 6.1 Target throughput and latency (placeholder SLOs)
+
+| SLO | Placeholder value |
+|---|---|
+| Peak order throughput | **500 orders/s** |
+| API response, `POST /orders/{id}/confirm` | **p99 ≤ 300 ms** |
+| End-to-end, confirm → `RESERVED` / `RESERVATION_FAILED` | **p99 ≤ 1 s** |
+
+Two latency SLOs, not one: the confirm endpoint is a single local DB transaction (synchronous, fast, unaffected by downstream load), while the end-to-end path is asynchronous and crosses **two** pollers.
+The end-to-end budget decomposes as: 2 × polling delay (≤ 200 ms worst case at the 100 ms interval, §5.4) + 2 consumer DB transactions + 2 Kafka round trips — comfortably inside 1 s, with headroom for load-induced queueing.
+A 300 ms end-to-end target would leave ~100 ms after polling alone and is not realistic under this architecture; the 300 ms figure applies to the synchronous API only.
+
+> Honesty note: a make-to-stock manufacturer of this size sees hundreds of orders per *day*, not 500 per second.
+> The placeholder is deliberately oversized so that the partition/consumer arithmetic below is non-trivial; W16 replaces it with the measured capacity of the actual (laptop/CI) environment.
+
+### 6.2 Partition count
+
+Partition count is the **upper bound on consumer-group parallelism**, so it is derived from the consumer side:
+
+```
+assumed per-consumer capacity : one event = one DB tx ≈ 5–10 ms  →  100–200 events/s
+consumers needed at peak      : 500 events/s ÷ 100 events/s = 5
+headroom                      : ×2  →  12 partitions
+```
+
+**`orders.events` and `inventory.events`: 12 partitions each. DLQ topics: 1 partition** (their volume is incident-sized, not traffic-sized).
+
+The headroom is deliberately front-loaded because the cost of the two errors is asymmetric: adding partitions later **changes the key→partition mapping**, so during the transition, events of the same order can land on different partitions and the §4.2 ordering guarantee breaks; oversizing merely costs the broker some per-partition overhead, negligible at this scale.
+Message keys are UUIDs (`order_id`), so key distribution across partitions is uniform and skew is not a concern at the Kafka layer.
+
+> The honest bottleneck prediction is not Kafka at all: reservations for a **hot item** serialize on the `SELECT … FOR UPDATE` row lock (§3.2) of that one `(entity_id, item_id)` row, and no partition count fixes DB-level contention.
+> This is the first ceiling the locust test is expected to expose.
+
+### 6.3 Consumer scaling and rebalancing
+
+- **Scaling out** is adding instances to the consumer group, up to the partition count (12); beyond that, instances idle.
+- **Rebalance strategy: cooperative-sticky** (incremental rebalance).
+  The default eager protocol stops the whole group while every partition is revoked and reassigned; cooperative-sticky moves only the partitions that actually change owner.
+- **Rebalance safety is not new machinery**: a partition revoked mid-processing simply means the offset was never committed, which is duplicate path #5 of §5.7 — redelivered and absorbed by `processed_events`.
+  The interaction with blocking retries is already bounded by the `max.poll.interval.ms` rule of §5.5.
+- **The poller does not scale** (singleton, §5.4), so its ceiling matters: at batch 100 and a 20–50 ms drain-mode cycle (no sleep while a full batch is returned), it publishes ~2,000–5,000 events/s — the singleton is not the bottleneck at the 500 events/s target.
+
+### 6.4 Backpressure policy
+
+When intake exceeds processing capacity, pressure accumulates in the system's two **natural buffers**: unpublished rows in the outbox (producer side) and consumer lag in Kafka (consumer side) — both unbounded queues that lose nothing.
+
+**Policy: accept-and-lag.**
+The API keeps accepting and confirming orders at full speed; only the end-to-end SLO degrades (reservations arrive late), and the degradation is honest to clients because the contract is already asynchronous — the client polls `GET /orders/{id}` (§5.2), so a stretched eventual-consistency window breaks no interface.
+Recovery is automatic: consumers and the poller drain the buffers, and the retry jitter of §5.5 prevents a synchronized stampede onto a recovering DB.
+
+Two metrics with alert thresholds make the pressure visible: **outbox depth** (`published_at IS NULL` count) and **consumer-group lag**.
+
+> Rejected alternative — load shedding at the API (respond 429 above a lag threshold): for an order-intake system, refusing an order outright is a worse business outcome than reserving its inventory late.
+> Recorded as the future option if a bounded reservation delay ever becomes a hard requirement.
+
+### 6.5 What W16 must measure
+
+The assumptions to replace with data, in priority order: per-consumer events/s (the 100–200 assumption drives the partition count), hot-item lock contention under skewed order mixes, poller drain-cycle time, and the end-to-end latency distribution against the 1 s placeholder.
+
+## 7. Out of Scope / Stretch
 
 Some deferred items still leave a mark on the v0.5 schema: a column or envelope field is added now even though the feature built on top of it is not.
 
