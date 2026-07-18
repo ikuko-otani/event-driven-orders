@@ -15,6 +15,10 @@ The **asynchronous slice stays local by design**:
 inventory-worker, the outbox pollers, and the broker run in local Compose only, and the production story for the broker is argued in ADR-001 (managed Kafka assumption) rather than deployed.
 Deploying a broker plus consumers would multiply infrastructure cost and Terraform surface without changing what the deployment demonstrates — the event-driven machinery is exercised locally and in CI (§2), where it is reproducible for free.
 
+A public write endpoint with no authentication is a real cost and abuse surface even for a demo.
+This ADR does not settle it: when the deployment is implemented, authentication, rate limiting, and demo-window protection (or keeping the endpoint up only during demos via the destroy lifecycle) are decided then.
+Recorded here so the gap is explicit rather than overlooked.
+
 Deployment shape candidates for order-api, from most to least self-managed:
 
 1. **EC2** — self-managed instances; container orchestration by hand.
@@ -76,6 +80,7 @@ The trigger is schedule-based (time box exceeded), not technical; no property of
 
 - Terraform is the deliverable as much as the running service: VPC, ALB, security groups, IAM roles, ECS, RDS, ECR, and logs are all declared in-repo; `terraform destroy` must leave nothing behind (verified as part of the deployment task).
 - The deployed system is the synchronous slice only; a reader probing the async design is pointed at local Compose, CI, and ADR-001/ADR-002 — this split (deploy the API, argue the broker) is now explicit and deliberate.
+  A consequence to make visible when demoing: with no broker or worker in the cloud, a confirmed order stays `CONFIRMED` (its reservation never runs) and its outbox rows accumulate unsent — the full Saga is shown only against local Compose / CI.
 - Fargate's idle cost (ALB floor) is accepted and bounded by the destroy lifecycle.
 - If the fallback fires, this ADR is amended: status stays Accepted with the App Runner outcome recorded and the Fargate path preserved as the documented growth direction.
 

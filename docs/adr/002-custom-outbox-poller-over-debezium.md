@@ -75,7 +75,7 @@ That is the scenario the stretch item exists for.
 
 Replace the poller with Debezium when any of these becomes true:
 
-- W16 load tests show the polling interval or the singleton ceiling actually binding (§6.5), or
+- the planned load tests show the polling interval or the singleton ceiling actually binding (§6.5), or
 - the number of services grows enough that per-service pollers outweigh one Connect cluster, or
 - outbox `published_at` write amplification measurably pressures the DB.
 

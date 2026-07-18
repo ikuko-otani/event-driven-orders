@@ -13,7 +13,7 @@ The domain design already commits to properties the broker must supply:
 
 - **Per-order ordering with parallel consumers** — all events of one order share a message key (`order_id`) and must be consumed in publish order (§4.2), while the consumer side scales horizontally (§6.2–6.3).
 - **At-least-once delivery under consumer control** — the consumer must be able to commit its position only *after* its DB transaction commits (§5.7); duplicates are absorbed by `processed_events` (§4.4).
-- **Replayability** — DLQ re-injection (§5.6) and event-replay integration tests (§1) both re-consume messages that were already delivered once.
+- **Replayability** — consumption must be non-destructive and position-addressable: DLQ re-injection (§5.6) re-publishes a delivered message's original bytes to its topic, and event-replay integration tests (§1) re-run the real consumers over recorded event sequences. Both need a log that keeps delivered messages and lets a consumer re-read from a chosen position, not a queue that drops them on ack.
 - **Retention as configuration** — DLQ topics must hold messages for 14 days regardless of consumption (§5.6).
 - **Producer idempotence** — the outbox poller relies on `enable.idempotence=true` to suppress duplicate sends within a producer session (§5.4).
 
@@ -54,7 +54,7 @@ The costs surface at exactly the properties the design depends on:
   Historical entries can be re-read with ID-range queries (`XRANGE`), but consumer-group state (last-delivered ID, pending-entries list) is built for forward consumption and manual claiming (`XAUTOCLAIM`), not for rewind-and-reprocess.
   DLQ re-injection (§5.6) and event-replay tests (§1) are rewind workflows.
 - **Role mismatch on durability.**
-  The Redis already in the stack holds ephemeral 24-hour idempotency keys — a cache-tier responsibility where losing data on restart is acceptable (§4.4).
+  The Redis already in the stack fronts HTTP idempotency as a response cache with a 24-hour TTL — a cache-tier responsibility where losing data on restart is acceptable precisely because the durable authority is the `orders.idempotency_key` constraint in Postgres, not Redis (§4.4).
   A 14-day event log is a system-of-record responsibility; colocating it on the same in-memory-first instance couples the log's memory footprint and availability to the cache, and running a second, persistence-hardened Redis forfeits the "already have it" economy that motivated the option.
 - **Trimming is not retention.**
   Streams are capped by length (`MAXLEN`/`MINID`); a 14-day time-based DLQ retention (§5.6) would need an external trimming job.
@@ -96,7 +96,7 @@ For an event-driven system, that ecosystem depth is itself an architectural prop
 - **Kafka-API-compatible single binary** — no ZooKeeper ensemble, and no separate KRaft controller quorum to configure; one container in Compose.
 - **Light footprint** — written in C++ with modest memory defaults, it suits a laptop and CI runners; a testcontainers module exists for the CI path (§2).
 - **Single node = replication factor 1**, so `acks=all` degenerates to a single broker's acknowledgement.
-  Accepted: local data durability is not a requirement, and the producer contract of §5.4 is unchanged — the same configuration provides full guarantees on a replicated cluster.
+  Accepted: local data durability is not a requirement, and the producer contract of §5.4 is unchanged — on a replicated cluster the same configuration provides full guarantees **once `min.insync.replicas ≥ 2`**, so `acks=all` waits for a real replica quorum rather than a lone in-sync leader.
 - **Known limitation**: Redpanda is protocol-compatible, not Kafka's codebase.
   v0.5 relies only on core protocol surface (idempotent producer, consumer groups, manual commit) — all supported; broker-internal behaviour (e.g. exact rebalance timing) may differ from Kafka's, which is acceptable for a dev/CI environment whose production assumption is stated below.
 
