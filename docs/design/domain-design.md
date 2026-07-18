@@ -55,7 +55,7 @@ v0.5 models the **sell side only**: order intake and inventory reservation, incl
 **Multi-entity note**: the schema and event envelope carry an `entity_id` (sales company) from day one, but v0.5 seeds exactly **one** entity and implements no entity-scoped features.
 Rationale in §3.2 and §7.
 
-**De-scoping order** (if capacity runs short, applied in this order): stretch items first, then the multi-entity functional layer (§7), then the `customers` master (§3.2), then simplify observability to structured logging only.
+**De-scoping order** (if capacity runs short, applied in this order): the multi-entity functional layer (§7) first, then the `customers` master (§3.2), then simplify observability to structured logging only. (Stretch items are by definition already out of v0.5, §7.)
 The Saga, outbox, and idempotency machinery are never de-scoped — demonstrating them is the point of the project.
 
 **Out of scope / stretch** — deferred deliberately; see §7.
@@ -183,7 +183,7 @@ Both services own an `outbox` and a `processed_events` table because both act as
 - **outbox** — one per schema; the transactional-outbox table.
   Events are written in the same DB transaction as the business change (avoiding the dual-write problem), then published to Kafka by a separate poller process.
   `id` doubles as the event id.
-  The poller publishes rows where `published_at IS NULL` and marks them afterwards, so delivery is **at-least-once**.
+  The poller publishes rows where `published_at IS NULL` (and not quarantined, §5.4) and marks them afterwards, so delivery is **at-least-once**.
 - **processed_events** — consumer-side deduplication for at-least-once delivery: PK `(event_id, consumer_name)`; insert first, skip processing if the row already exists.
   `consumer_name` is the **logical** consumer (the consumer-group name), never a per-instance identifier — otherwise a redelivery to a different instance (§5.7 path #5) would not be recognised as a duplicate.
 
@@ -218,13 +218,13 @@ All events share one envelope; `payload` differs per event type.
 
 | Topic | Producer | Contents |
 |---|---|---|
-| `orders.events` | order-api | all order-aggregate events |
-| `inventory.events` | inventory-worker | all inventory-aggregate events |
+| `orders.events` | order-api | all events order-api produces (order-lifecycle facts) |
+| `inventory.events` | inventory-worker | all events inventory-worker produces (reservation replies) |
 | `<topic>.<consumer>.dlq` | (consumer) | dead-letter topic per consumer |
 
 - **Message key = `order_id`.** Kafka guarantees ordering only within a partition; keying by order id keeps all events about one order in order.
   This is realized by the outbox: **every Saga event, on both topics, stores `aggregate_id = order_id`**, so the poller's `key = aggregate_id` (§5.4) yields `order_id` uniformly. Inventory-worker's events (`InventoryReserved`, `InventoryReservationFailed`) are steps in the order's choreographed Saga, so their correlating aggregate is the Order too — `aggregate_type = "Order"`, `aggregate_id = <the order_id being processed>` — even though the rows they write live in the `inventory` schema. Keying an inventory event on an inventory-side id would silently break per-order ordering on the order-api consumer.
-- **One topic per service, not per event type**: if events of the same aggregate were spread across topics, the per-order ordering guarantee would be lost.
+- **One topic per producing service, not per event type**: each service writes all of its events to its own topic, so everything a single consumer must apply in `order_id` order arrives on one partition of one topic. (Order-aggregate events do span both topics — `OrderConfirmed` on `orders.events`, the reservation reply on `inventory.events` — but each is read by a different service, and their relative order is fixed by Saga causality (§5), not by partitioning.)
 
 ### 4.3 Events (v0.5)
 
@@ -302,7 +302,7 @@ The outbox supplies a fresh UUID per event for free, so `event_id` deduplication
 | *(absent)* | 404 | 404 | 404 |
 
 **Invariant: only the `PENDING → CONFIRMED` cell writes an `OrderConfirmed` outbox row.**
-Every other `confirm` cell is a read-only 200/409, so no order can emit a second `OrderConfirmed` — this closes B-1 at the contract level.
+Every other `confirm` cell is read-only (200 no-op, 404, or 409), so no order can emit a second `OrderConfirmed` — this closes B-1 at the contract level.
 A `CONFIRMED`+ order is immutable because its lines are now a published contract (`OrderConfirmed`); mutation is refused to keep the event and the row in agreement.
 Recovering a `RESERVATION_FAILED` order is a future capability (order splitting / backorder, §7), not a re-confirm.
 
