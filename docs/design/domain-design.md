@@ -16,9 +16,8 @@ The domain is grounded in business flows I observed first-hand in professional w
   Purchasing (issuing purchase orders to suppliers) was also in scope.
 - **Production-management package customization (MCFrame)** for a pharmaceutical manufacturer, where I first observed the concept of *inventory reservation* — allocating stock to a specific order.
   This is also where I first worked on a system handling **multiple corporate entities within a single system**, the origin of the *multi-entity* axis carried in this schema (§3.2).
-- **Finance/accounting web system for a supermarket group** (2015–2019): the group's accounting included consolidated reporting across multiple group companies, and I worked on implementing that consolidation.
-  This is a related but distinct exposure — cross-company consolidation in financial reporting, not first-hand experience with a single system modeling multiple entities — and does not by itself claim detailed per-entity bookkeeping experience.
-  The multi-entity requirement itself is also a staple of accounting/finance SaaS product descriptions.
+- **Finance/accounting web system for a supermarket group** (2015–2019): I implemented consolidated reporting across the group's companies.
+  This is cross-company consolidation — related to, but distinct from, a single system modeling multiple entities — and the multi-entity requirement is itself a staple of accounting/finance SaaS.
 
 **This repository is a personal portfolio project.**
 It does not reproduce any employer's or client's system; it re-models generic domain flows, informed by that experience, on a modern event-driven stack.
@@ -50,6 +49,8 @@ v0.5 models the **sell side only**: order intake and inventory reservation, incl
 - Compensation (Saga) for reservation failure, with retry policy and a DLQ topic
 - Observability: OpenTelemetry distributed tracing + structured logging (simplification is the designated de-scoping step if capacity runs short)
 - CI: GitHub Actions (pytest + testcontainers + Redpanda)
+
+**Stack**: order-api is a FastAPI application; inventory-worker is a Python consumer; PostgreSQL backs both schemas, and Kafka runs as a single-node Redpanda locally (ADR-001).
 
 **Multi-entity note**: the schema and event envelope carry an `entity_id` (sales company) from day one, but v0.5 seeds exactly **one** entity and implements no entity-scoped features.
 Rationale in §3.2 and §7.
@@ -304,6 +305,11 @@ The outbox supplies a fresh UUID per event for free, so `event_id` deduplication
 Every other `confirm` cell is a read-only 200/409, so no order can emit a second `OrderConfirmed` — this closes B-1 at the contract level.
 A `CONFIRMED`+ order is immutable because its lines are now a published contract (`OrderConfirmed`); mutation is refused to keep the event and the row in agreement.
 Recovering a `RESERVATION_FAILED` order is a future capability (order splitting / backorder, §7), not a re-confirm.
+
+**Why `confirm` returns 200, not 202.**
+The action this endpoint contracts to perform — the `PENDING → CONFIRMED` transition and its outbox write — completes synchronously and commits within the request, so 200 (done) is accurate.
+202 would imply the confirm itself is still pending, whereas what is asynchronous is the *downstream* reservation, observed as a later state via `GET /orders/{id}` (§5.2).
+Keeping 200 also holds the endpoint to one uniform code across the transition and its idempotent no-op replays.
 
 **Consumed events × state** — order-api applies inventory events as guarded updates:
 
@@ -623,7 +629,7 @@ Two latency SLOs, not one: the confirm endpoint is a single local DB transaction
 The end-to-end budget decomposes as: 2 × polling delay (≤ 200 ms worst case at the 100 ms interval, §5.4) + 2 consumer DB transactions + 2 Kafka round trips — comfortably inside 1 s, with headroom for load-induced queueing.
 A 300 ms end-to-end target would leave ~100 ms after polling alone and is not realistic under this architecture; the 300 ms figure applies to the synchronous API only.
 
-> Honesty note: a make-to-stock manufacturer of this size sees hundreds of orders per *day*, not 500 per second.
+> Reality check: a make-to-stock manufacturer of this size sees hundreds of orders per *day*, not 500 per second.
 > The placeholder is deliberately oversized so that the partition/consumer arithmetic below is non-trivial; the load test replaces it with the measured capacity of the actual (laptop/CI) environment.
 
 ### 6.2 Partition count
