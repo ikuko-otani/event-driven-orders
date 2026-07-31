@@ -1,7 +1,7 @@
 # Domain Design — event-driven-orders
 
-> **Version**: 0.4 (draft) — 2026-07-19
-> **Status**: ER diagram and event catalog (v0.2); Saga reliability details — outbox poller, retry/DLQ, edge cases — and scale assumptions (v0.3); pre-implementation review fixes — concurrency-safe state transitions, idempotency authority, envelope/outbox mapping, reservation granularity, producer-side poison, and the API state×operation contract (v0.4).
+> **Version**: 0.4.1 (draft) — 2026-08-01
+> **Status**: ER diagram and event catalog (v0.2); Saga reliability details — outbox poller, retry/DLQ, edge cases — and scale assumptions (v0.3); pre-implementation review fixes — concurrency-safe state transitions, idempotency authority, envelope/outbox mapping, reservation granularity, producer-side poison, and the API state×operation contract (v0.4); editorial pass — authentication recorded in §7, cross-references made self-contained (v0.4.1, no design change).
 > Broker selection is settled in ADR-001 (Kafka) and ADR-002 (custom outbox poller).
 
 ---
@@ -179,7 +179,7 @@ Both services own an `outbox` and a `processed_events` table because both act as
   When one order reserves several items, the rows are locked in a deterministic order (**by `item_id`**), so two orders touching the same pair of items cannot deadlock by taking the locks in opposite orders.
 - **inventory_reservations** — reservations are stored as rows, not just a counter, because (1) Saga compensation then has a precise inverse operation (mark the row `RELEASED` and decrement the counter), and (2) the rows are an audit trail of which order holds which stock.
   `created_by_event` records the event that created the reservation.
-  **Granularity: one reservation per `(order_id, item_id)`.** v0.5 forbids duplicate item lines within an order (`UNIQUE (order_id, item_id)` on `order_lines`), so a reservation maps to exactly one order line by that pair — the linkage the ER draws as `ORDER_LINE ⋯ INVENTORY_RESERVATION`, carried by value (no cross-schema FK). A partial unique index **`UNIQUE (order_id, item_id) WHERE status = 'ACTIVE'`** lets an order hold at most one active reservation per item: this is the consumer-side second line of defense promised for B-1 (§5.7) — a duplicate or replayed `OrderConfirmed` that slipped past the write-path guard cannot double-reserve, because the second insert hits the constraint, which the consumer treats as *already reserved* (an idempotent no-op: record in `processed_events`, emit no further `InventoryReserved`), not a retry or DLQ case. Lifting the no-duplicate-lines rule later (the deferred per-line delivery dates of §7) is a versioned change — add `order_line_id` to the reservation and to the `InventoryReserved` payload, and relax the constraint — bounded, not a cascade.
+  **Granularity: one reservation per `(order_id, item_id)`.** v0.5 forbids duplicate item lines within an order (`UNIQUE (order_id, item_id)` on `order_lines`), so a reservation maps to exactly one order line by that pair — the linkage the ER draws as `ORDER_LINE ⋯ INVENTORY_RESERVATION`, carried by value (no cross-schema FK). A partial unique index **`UNIQUE (order_id, item_id) WHERE status = 'ACTIVE'`** lets an order hold at most one active reservation per item: this is the consumer-side second line of defense promised in §5.7 — a duplicate or replayed `OrderConfirmed` that slipped past the write-path guard cannot double-reserve, because the second insert hits the constraint, which the consumer treats as *already reserved* (an idempotent no-op: record in `processed_events`, emit no further `InventoryReserved`), not a retry or DLQ case. Lifting the no-duplicate-lines rule later (the deferred per-line delivery dates of §7) is a versioned change — add `order_line_id` to the reservation and to the `InventoryReserved` payload, and relax the constraint — bounded, not a cascade.
 - **outbox** — one per schema; the transactional-outbox table.
   Events are written in the same DB transaction as the business change (avoiding the dual-write problem), then published to Kafka by a separate poller process.
   `id` doubles as the event id.
@@ -277,7 +277,7 @@ Because the claim is the same row write that creates the order, concurrency need
 Redis sits in front purely as a **response cache**: a successful create stores the response body under the idempotency key with a 24-hour TTL; a retry that hits the cache replays the stored response without touching Postgres.
 A cache miss — cold start, eviction, TTL expiry, or a Redis restart — falls through to the constraint, so **losing the Redis data is a latency regression, never a correctness one**.
 The durable guarantee lives in Postgres; Redis only makes the idempotent replay fast, exactly as the event layer keeps its guarantee in `processed_events` rather than in memory.
-v0.5 has no authenticated principal, so the key is scoped per `(entity_id, key)`; adding auth later widens the scope to the calling principal, so one client's key cannot collide with another's.
+v0.5 has no authenticated principal (§7), so the key is scoped per `(entity_id, key)`; adding auth later widens the scope to the calling principal, so one client's key cannot collide with another's.
 
 **Rejected alternative** — deduplicating on a business key (`order_id` + state transition): it cannot distinguish a legitimate re-processing of the same order (e.g. a future cancel-and-reconfirm flow) from a duplicate delivery.
 The outbox supplies a fresh UUID per event for free, so `event_id` deduplication is both simpler and more precise.
@@ -302,7 +302,7 @@ The outbox supplies a fresh UUID per event for free, so `event_id` deduplication
 | *(absent)* | 404 | 404 | 404 |
 
 **Invariant: only the `PENDING → CONFIRMED` cell writes an `OrderConfirmed` outbox row.**
-Every other `confirm` cell is read-only (200 no-op, 404, or 409), so no order can emit a second `OrderConfirmed` — this closes B-1 at the contract level.
+Every other `confirm` cell is read-only (200 no-op, 404, or 409), so no order can emit a second `OrderConfirmed` — the contract-level half of the duplicate-confirm guard whose write-path half is the conditional `UPDATE` of §5.7.
 A `CONFIRMED`+ order is immutable because its lines are now a published contract (`OrderConfirmed`); mutation is refused to keep the event and the row in agreement.
 Recovering a `RESERVATION_FAILED` order is a future capability (order splitting / backorder, §7), not a re-confirm.
 
@@ -699,4 +699,5 @@ See the **Schema footprint** column below.
 | Item-master sync events | v0.5 syncs master data via seeds; event-carried master sync is a stretch topic | None |
 | Debezium CDC | Custom poller chosen deliberately (ADR-002) | N/A |
 | CQRS read model | Stretch after v0.5 close | N/A |
+| Authentication & authorization | v0.5 runs locally and in CI, where the only caller is the developer or the test suite, so there is no authenticated principal to enforce against. It is a prerequisite for exposing the API publicly (ADR-003), not for the reliability machinery this version is built to exercise | None on the schema; the HTTP idempotency key is scoped per `(entity_id, key)` and widens to include the calling principal when auth lands (§4.4) |
 | Public deployment | Handled by a separate AWS + Terraform task (October) | N/A |
