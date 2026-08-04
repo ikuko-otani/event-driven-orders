@@ -1,0 +1,11 @@
+[tool.uv.workspace]
+members = ["services/*", "libs/*"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.11",
+    "poethepoet>=0.29",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
