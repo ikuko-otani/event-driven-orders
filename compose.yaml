@@ -50,6 +50,45 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    build:
+      context: .
+      dockerfile: services/order-api/Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  inventory-worker:
+    build:
+      context: .
+      dockerfile: services/inventory-worker/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "find /tmp/heartbeat -mmin -1 | grep -q ."]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
 volumes:
   postgres-data:
   redpanda-data:
