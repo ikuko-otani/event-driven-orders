@@ -29,7 +29,9 @@ testpaths = ["tests"]
 
 [tool.poe.tasks]
 format = "ruff format ."
+format-check = "ruff format --check ."
 lint = "ruff check ."
 typecheck = "mypy"
 test = "pytest"
 check = ["format", "lint", "typecheck", "test"]
+ci = ["format-check", "lint", "typecheck", "test"]
