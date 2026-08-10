@@ -3,7 +3,10 @@ name = "common"
 version = "0.1.0"
 description = "Shared configuration and event-envelope helpers"
 requires-python = ">=3.12"
-dependencies = ["pydantic-settings>=2.5"]
+dependencies = [
+    "pydantic-settings>=2.5",
+    "sqlalchemy>=2.0",
+]
 
 [build-system]
 requires = ["hatchling"]
