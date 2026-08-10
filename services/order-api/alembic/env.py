@@ -12,7 +12,7 @@ is what keeps the service ownership of design §3.1 enforced by the tooling:
 from typing import Any
 
 from alembic import context
-from sqlalchemy import Connection, create_engine, text
+from sqlalchemy import create_engine, text
 
 from common.settings import DatabaseSettings
 from order_api.models import Base
