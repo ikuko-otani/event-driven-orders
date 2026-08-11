@@ -1,8 +1,9 @@
 """Master tables owned by order-api (design §3.2)."""
 
 import uuid
+from decimal import Decimal
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,3 +30,14 @@ class Customer(Base):
     entity_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sales_entities.id"), index=True)
     code: Mapped[str] = mapped_column(String(20))
     name: Mapped[str] = mapped_column(String(200))
+
+
+class Item(Base):
+    """A catalog item, shared across sales entities in v0.5 (design §3.2)."""
+
+    __tablename__ = "items"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(String(20), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
+    list_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
