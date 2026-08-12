@@ -7,5 +7,6 @@ imports silently produces an empty migration.
 
 from order_api.models.base import Base
 from order_api.models.masters import Customer, Item, SalesEntity
+from order_api.models.orders import Order, OrderLine
 
-__all__ = ["Base", "Customer", "Item", "SalesEntity"]
+__all__ = ["Base", "Customer", "Item", "Order", "OrderLine", "SalesEntity"]
