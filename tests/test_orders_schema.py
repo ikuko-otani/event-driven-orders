@@ -1,5 +1,6 @@
 """The orders-schema history applies to a real PostgreSQL and enforces its constraints."""
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -7,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from order_api.models import Customer, Item, SalesEntity
+from order_api.models import Customer, Item, Order, OrderLine, SalesEntity
 
 
 @pytest.mark.asyncio
@@ -65,5 +66,119 @@ async def test_duplicate_item_code_is_rejected(db_session: AsyncSession) -> None
     await db_session.commit()
 
     db_session.add(Item(code="I1", name="Duplicate", list_price=Decimal("9.99")))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_order_number_within_entity_is_rejected(
+    db_session: AsyncSession,
+) -> None:
+    entity = SalesEntity(code="E5", name="Entity Five")
+    db_session.add(entity)
+    await db_session.flush()
+    customer = Customer(entity_id=entity.id, code="C1", name="A customer")
+    db_session.add(customer)
+    await db_session.flush()
+
+    def _order(order_number: str) -> Order:
+        return Order(
+            entity_id=entity.id,
+            customer_id=customer.id,
+            order_number=order_number,
+            idempotency_key=f"key-{order_number}",
+            currency="EUR",
+            delivery_date=date(2026, 9, 1),
+        )
+
+    db_session.add(_order("ORD-1"))
+    await db_session.commit()
+
+    db_session.add(_order("ORD-1"))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_idempotency_key_within_entity_is_rejected(
+    db_session: AsyncSession,
+) -> None:
+    entity = SalesEntity(code="E6", name="Entity Six")
+    db_session.add(entity)
+    await db_session.flush()
+    customer = Customer(entity_id=entity.id, code="C1", name="A customer")
+    db_session.add(customer)
+    await db_session.flush()
+
+    def _order(order_number: str, idempotency_key: str) -> Order:
+        return Order(
+            entity_id=entity.id,
+            customer_id=customer.id,
+            order_number=order_number,
+            idempotency_key=idempotency_key,
+            currency="EUR",
+            delivery_date=date(2026, 9, 1),
+        )
+
+    db_session.add(_order("ORD-2", "same-key"))
+    await db_session.commit()
+
+    db_session.add(_order("ORD-3", "same-key"))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_invalid_order_status_is_rejected(db_session: AsyncSession) -> None:
+    entity = SalesEntity(code="E7", name="Entity Seven")
+    db_session.add(entity)
+    await db_session.flush()
+    customer = Customer(entity_id=entity.id, code="C1", name="A customer")
+    db_session.add(customer)
+    await db_session.flush()
+
+    order = Order(
+        entity_id=entity.id,
+        customer_id=customer.id,
+        order_number="ORD-4",
+        status="BOGUS",
+        idempotency_key="key-4",
+        currency="EUR",
+        delivery_date=date(2026, 9, 1),
+    )
+    db_session.add(order)
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_order_line_item_is_rejected(db_session: AsyncSession) -> None:
+    entity = SalesEntity(code="E8", name="Entity Eight")
+    db_session.add(entity)
+    await db_session.flush()
+    customer = Customer(entity_id=entity.id, code="C1", name="A customer")
+    item = Item(code="I2", name="Widget", list_price=Decimal("5.00"))
+    db_session.add_all([customer, item])
+    await db_session.flush()
+
+    order = Order(
+        entity_id=entity.id,
+        customer_id=customer.id,
+        order_number="ORD-5",
+        idempotency_key="key-5",
+        currency="EUR",
+        delivery_date=date(2026, 9, 1),
+    )
+    db_session.add(order)
+    await db_session.flush()
+
+    db_session.add(
+        OrderLine(order_id=order.id, item_id=item.id, quantity=1, unit_price=Decimal("5.00"))
+    )
+    await db_session.commit()
+
+    db_session.add(
+        OrderLine(order_id=order.id, item_id=item.id, quantity=2, unit_price=Decimal("5.00"))
+    )
     with pytest.raises(IntegrityError):
         await db_session.commit()
