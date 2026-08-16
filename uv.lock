@@ -420,11 +420,21 @@ name = "inventory-worker"
 version = "0.1.0"
 source = { editable = "services/inventory-worker" }
 dependencies = [
+    { name = "alembic" },
+    { name = "asyncpg" },
     { name = "common" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "common", editable = "libs/common" }]
+requires-dist = [
+    { name = "alembic", specifier = ">=1.13" },
+    { name = "asyncpg", specifier = ">=0.30" },
+    { name = "common", editable = "libs/common" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
+]
 
 [[package]]
 name = "librt"

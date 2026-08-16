@@ -3,7 +3,13 @@ name = "inventory-worker"
 version = "0.1.0"
 description = "Kafka consumer for inventory reservation"
 requires-python = ">=3.12"
-dependencies = ["common"]
+dependencies = [
+    "alembic>=1.13",
+    "asyncpg>=0.30",
+    "common",
+    "psycopg[binary]>=3.2",
+    "sqlalchemy[asyncio]>=2.0",
+]
 
 [tool.uv.sources]
 common = { workspace = true }
