@@ -5,7 +5,6 @@ ORM instance with its primary key populated after a flush — never committed
 here, so callers control the transaction boundary.
 """
 
-import uuid
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,9 +58,7 @@ async def create_inventory(
     item: Item,
     quantity_on_hand: int = 100,
 ) -> Inventory:
-    inventory = Inventory(
-        entity_id=entity.id, item_id=item.id, quantity_on_hand=quantity_on_hand
-    )
+    inventory = Inventory(entity_id=entity.id, item_id=item.id, quantity_on_hand=quantity_on_hand)
     session.add(inventory)
     await session.flush()
     return inventory
