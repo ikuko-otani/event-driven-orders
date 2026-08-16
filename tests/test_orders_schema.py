@@ -9,7 +9,15 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from order_api.models import Customer, Item, Order, OrderLine, Outbox, SalesEntity
+from order_api.models import (
+    Customer,
+    Item,
+    Order,
+    OrderLine,
+    Outbox,
+    ProcessedEvent,
+    SalesEntity,
+)
 
 
 @pytest.mark.asyncio
@@ -221,3 +229,26 @@ async def test_new_outbox_row_starts_unpublished_at_version_one(
     assert row.published_at is None
     assert row.quarantined_at is None
     assert row.created_at is not None
+
+
+@pytest.mark.asyncio
+async def test_duplicate_processed_event_for_same_consumer_is_rejected(
+    db_session: AsyncSession,
+) -> None:
+    event_id = uuid.uuid4()
+    db_session.add(ProcessedEvent(event_id=event_id, consumer_name="order-api"))
+    await db_session.commit()
+
+    db_session.add(ProcessedEvent(event_id=event_id, consumer_name="order-api"))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_same_event_processed_by_different_consumers_is_allowed(
+    db_session: AsyncSession,
+) -> None:
+    event_id = uuid.uuid4()
+    db_session.add(ProcessedEvent(event_id=event_id, consumer_name="order-api"))
+    db_session.add(ProcessedEvent(event_id=event_id, consumer_name="order-api-audit-log"))
+    await db_session.commit()  # raises nothing — this is the assertion
