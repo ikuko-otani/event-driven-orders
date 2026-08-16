@@ -24,7 +24,7 @@ known-first-party = ["common", "inventory_worker", "order_api"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["libs", "services", "tests"]
+files = ["libs", "scripts", "services", "tests"]
 exclude = ["(^|/)alembic/"]
 
 [tool.pytest.ini_options]
@@ -39,5 +39,6 @@ lint = "ruff check ."
 typecheck = "mypy"
 test = "pytest"
 migrate = "alembic -c services/order-api/alembic.ini upgrade head"
+seed = "python scripts/seed.py"
 check = ["format", "lint", "typecheck", "test"]
 ci = ["format-check", "lint", "typecheck", "test"]
