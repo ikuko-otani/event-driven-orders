@@ -1,5 +1,6 @@
 """The orders-schema history applies to a real PostgreSQL and enforces its constraints."""
 
+import uuid
 from datetime import date
 from decimal import Decimal
 
@@ -8,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from order_api.models import Customer, Item, Order, OrderLine, SalesEntity
+from order_api.models import Customer, Item, Order, OrderLine, Outbox, SalesEntity
 
 
 @pytest.mark.asyncio
@@ -182,3 +183,41 @@ async def test_duplicate_order_line_item_is_rejected(db_session: AsyncSession) -
     )
     with pytest.raises(IntegrityError):
         await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_outbox_poller_index_only_covers_healthy_unpublished_rows(
+    engine: AsyncEngine,
+) -> None:
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT indexdef FROM pg_indexes "
+                "WHERE schemaname = 'orders' AND indexname = 'ix_outbox_unpublished'"
+            )
+        )
+    indexdef = result.scalar_one()
+    assert "published_at IS NULL" in indexdef
+    assert "quarantined_at IS NULL" in indexdef
+
+
+@pytest.mark.asyncio
+async def test_new_outbox_row_starts_unpublished_at_version_one(
+    db_session: AsyncSession,
+) -> None:
+    row = Outbox(
+        entity_id=uuid.uuid4(),
+        aggregate_type="Order",
+        aggregate_id=uuid.uuid4(),
+        event_type="OrderConfirmed",
+        payload={"order_id": "9a1f"},
+    )
+    db_session.add(row)
+    await db_session.commit()
+    await db_session.refresh(row)
+
+    assert row.event_version == 1
+    assert row.publish_attempts == 0
+    assert row.published_at is None
+    assert row.quarantined_at is None
+    assert row.created_at is not None
