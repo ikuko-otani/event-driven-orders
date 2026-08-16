@@ -33,9 +33,7 @@ def main() -> None:
         session.flush()
 
         customers = [
-            Customer(
-                entity_id=entity.id, code=f"CUST-{i:02d}", name=f"Example Customer {i}"
-            )
+            Customer(entity_id=entity.id, code=f"CUST-{i:02d}", name=f"Example Customer {i}")
             for i in range(1, 3)
         ]
         items = [
@@ -51,8 +49,7 @@ def main() -> None:
         session.flush()
 
         inventories = [
-            Inventory(entity_id=entity.id, item_id=item.id, quantity_on_hand=100)
-            for item in items
+            Inventory(entity_id=entity.id, item_id=item.id, quantity_on_hand=100) for item in items
         ]
         session.add_all(inventories)
         session.commit()
