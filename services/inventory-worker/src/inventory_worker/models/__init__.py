@@ -6,6 +6,6 @@ imports silently produces an empty migration.
 """
 
 from inventory_worker.models.base import Base
-from inventory_worker.models.inventory import Inventory
+from inventory_worker.models.inventory import Inventory, InventoryReservation
 
-__all__ = ["Base", "Inventory"]
+__all__ = ["Base", "Inventory", "InventoryReservation"]
