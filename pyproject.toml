@@ -8,6 +8,7 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
+    "testcontainers[postgres]>=4.8",
 ]
 
 [tool.ruff]
@@ -17,10 +18,14 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["common", "inventory_worker", "order_api"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
 files = ["libs", "services", "tests"]
+exclude = ["(^|/)alembic/"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -33,5 +38,6 @@ format-check = "ruff format --check ."
 lint = "ruff check ."
 typecheck = "mypy"
 test = "pytest"
+migrate = "alembic -c services/order-api/alembic.ini upgrade head"
 check = ["format", "lint", "typecheck", "test"]
 ci = ["format-check", "lint", "typecheck", "test"]

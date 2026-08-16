@@ -1,7 +1,7 @@
 # Domain Design — event-driven-orders
 
-> **Version**: 0.4.1 (draft) — 2026-08-01
-> **Status**: ER diagram and event catalog (v0.2); Saga reliability details — outbox poller, retry/DLQ, edge cases — and scale assumptions (v0.3); pre-implementation review fixes — concurrency-safe state transitions, idempotency authority, envelope/outbox mapping, reservation granularity, producer-side poison, and the API state×operation contract (v0.4); editorial pass — authentication recorded in §7, cross-references made self-contained (v0.4.1, no design change).
+> **Version**: 0.4.2 (draft) — 2026-08-11
+> **Status**: ER diagram and event catalog (v0.2); Saga reliability details — outbox poller, retry/DLQ, edge cases — and scale assumptions (v0.3); pre-implementation review fixes — concurrency-safe state transitions, idempotency authority, envelope/outbox mapping, reservation granularity, producer-side poison, and the API state×operation contract (v0.4); editorial pass — authentication recorded in §7, cross-references made self-contained (v0.4.1, no design change). Customer master given a human-facing business key, unique per entity (v0.4.2).
 > Broker selection is settled in ADR-001 (Kafka) and ADR-002 (custom outbox poller).
 
 ---
@@ -81,6 +81,7 @@ erDiagram
     CUSTOMER {
         uuid id PK
         uuid entity_id FK
+        text code "human-facing business key, unique per entity_id"
         text name
     }
     ORDER {
@@ -162,6 +163,8 @@ Both services own an `outbox` and a `processed_events` table because both act as
   The `entity_id` column is nevertheless baked into the schema and the event envelope from day one: retrofitting it later means rewriting every table and every event, while deferring only the *functional* layer (data-isolation guarantees, per-entity document numbering, API scoping) keeps the de-scoping decision reversible (§7).
 - **customers** — seeded master data, scoped to a sales entity; no CRUD API in v0.5.
   Exists to keep the FK design realistic instead of a free-text customer name.
+  `code` is the human-facing business key, carrying that same argument one step further: a customer master identified only by a name is exactly the unrealistic shape this table exists to avoid.
+  It is unique per `entity_id` rather than globally — a customer ledger belongs to a sales entity, so two entities may reuse a code for different customers — the same scoping `orders.order_number` has, and deliberately not the global uniqueness of `items.code`, whose catalog is shared across entities in v0.5.
   De-scoping candidate if capacity runs short.
 - **orders** — aggregate root of order intake.
   `status` lifecycle: `PENDING → CONFIRMED → RESERVED | RESERVATION_FAILED`; `CANCELLED` is reserved for future user-initiated cancellation (per-state operation outcomes: §4.6).
