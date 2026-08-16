@@ -58,15 +58,11 @@ class InventoryReservation(Base):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     order_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     item_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     quantity: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
     created_by_event: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
