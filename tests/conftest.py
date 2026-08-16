@@ -28,7 +28,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # One Alembic history per owning service (design §3.1). Both are applied here,
 # exactly as an operator applies them locally.
-ALEMBIC_INIS = [REPO_ROOT / "services" / "order-api" / "alembic.ini"]
+ALEMBIC_INIS = [
+    REPO_ROOT / "services" / "order-api" / "alembic.ini",
+    REPO_ROOT / "services" / "inventory-worker" / "alembic.ini",
+]
 
 
 @pytest.fixture(scope="session")
