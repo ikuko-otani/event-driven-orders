@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator
 
+from fastapi import Request
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -21,9 +22,8 @@ def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
-async def get_session(
-    request_state_sessionmaker: async_sessionmaker[AsyncSession],
-) -> AsyncGenerator[AsyncSession, None]:
+async def get_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
     """One session per request; the session's transaction is the request's transaction."""
-    async with request_state_sessionmaker() as session:
+    sessionmaker: async_sessionmaker[AsyncSession] = request.app.state.sessionmaker
+    async with sessionmaker() as session:
         yield session
