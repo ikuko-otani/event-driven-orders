@@ -13,6 +13,7 @@ import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import (
 from testcontainers.community.postgres import PostgresContainer
 
 from common.settings import DatabaseSettings
+from order_api.main import app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -97,3 +99,12 @@ async def db_session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
         yield session
+
+
+@pytest_asyncio.fixture
+async def api_client(migrated_database: str) -> AsyncGenerator[AsyncClient, None]:
+    """An HTTP client wired to the real app, with the app's own lifespan run around it."""
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client
