@@ -12,7 +12,7 @@ from order_api.schemas.orders import OrderCreate
 
 
 async def _next_order_number(session: AsyncSession) -> str:
-    result = await session.execute(select(func.nextval("orders.orders.order_number_seq")))
+    result = await session.execute(select(func.nextval("orders.order_number_seq")))
     value = result.scalar_one()
     return f"ORD-{value:06d}"
 
