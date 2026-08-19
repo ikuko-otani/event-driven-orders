@@ -16,7 +16,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from order_api.models.base import Base
 
@@ -43,6 +43,9 @@ class Order(Base):
     currency: Mapped[str] = mapped_column(String(3))
     delivery_date: Mapped[date] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    lines: Mapped[list["OrderLine"]] = relationship(
+        back_populates="order", cascade="all, delete-orphan"
+    )
 
 
 class OrderLine(Base):
@@ -56,3 +59,4 @@ class OrderLine(Base):
     item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("items.id"), index=True)
     quantity: Mapped[int] = mapped_column(Integer)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    order: Mapped["Order"] = relationship(back_populates="lines")
