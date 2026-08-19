@@ -27,3 +27,4 @@ async def get_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
     sessionmaker: async_sessionmaker[AsyncSession] = request.app.state.sessionmaker
     async with sessionmaker() as session:
         yield session
+        await session.commit()
