@@ -53,6 +53,8 @@ services:
     build:
       context: .
       dockerfile: services/order-api/Dockerfile
+    environment:
+      DB_HOST: postgres
     ports:
       - "8000:8000"
     depends_on:
