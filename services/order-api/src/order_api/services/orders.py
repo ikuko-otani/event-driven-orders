@@ -1,14 +1,19 @@
 """Order-creation business logic: numbering, price snapshot, validation."""
 
+import hashlib
 import uuid
 from collections import Counter
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from order_api.models import Customer, Item, Order, OrderLine
 from order_api.schemas.orders import OrderCreate
+
+IDEMPOTENCY_KEY_CONSTRAINT = "uq_orders_entity_id_idempotency_key"
 
 
 async def _next_order_number(session: AsyncSession) -> str:
@@ -17,13 +22,29 @@ async def _next_order_number(session: AsyncSession) -> str:
     return f"ORD-{value:06d}"
 
 
+async def _get_by_idempotency_key(
+    session: AsyncSession, *, entity_id: uuid.UUID, idempotency_key: str
+) -> Order:
+    result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.lines))
+        .where(Order.entity_id == entity_id, Order.idempotency_key == idempotency_key)
+    )
+    return result.scalar_one()
+
+
+def _fingerprint(body: OrderCreate) -> str:
+    canonical = body.model_dump_json()
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 async def create_order(
     session: AsyncSession,
     *,
     entity_id: uuid.UUID,
     idempotency_key: str,
     body: OrderCreate,
-) -> Order:
+) -> tuple[Order, bool]:
     duplicate_items = [
         item for item, count in Counter(line.item_id for line in body.lines).items() if count > 1
     ]
@@ -42,12 +63,14 @@ async def create_order(
         raise HTTPException(422, detail=f"item_id not found: {missing}")
 
     order_number = await _next_order_number(session)
+    fingerprint = _fingerprint(body)
 
     order = Order(
         entity_id=entity_id,
         customer_id=body.customer_id,
         order_number=order_number,
         idempotency_key=idempotency_key,
+        request_fingerprint=fingerprint,
         currency=body.currency,
         delivery_date=body.delivery_date,
     )
@@ -59,6 +82,20 @@ async def create_order(
         )
         for line in body.lines
     ]
+
     session.add(order)
-    await session.flush()
-    return order
+    try:
+        await session.flush()
+    except IntegrityError as err:
+        if getattr(err.orig, "constraint_name", None) != IDEMPOTENCY_KEY_CONSTRAINT:
+            raise
+        await session.rollback()
+        existing = await _get_by_idempotency_key(
+            session, entity_id=entity_id, idempotency_key=idempotency_key
+        )
+        if existing.request_fingerprint != fingerprint:
+            raise HTTPException(
+                422, detail="idempotency key reused with a different request body"
+            ) from err
+        return existing, False
+    return order, True
