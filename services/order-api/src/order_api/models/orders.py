@@ -40,6 +40,7 @@ class Order(Base):
     order_number: Mapped[str] = mapped_column(String(30))
     status: Mapped[str] = mapped_column(String(20), default="PENDING")
     idempotency_key: Mapped[str] = mapped_column(String(100))
+    request_fingerprint: Mapped[str] = mapped_column(String(64))
     currency: Mapped[str] = mapped_column(String(3))
     delivery_date: Mapped[date] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

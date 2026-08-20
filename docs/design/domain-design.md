@@ -1,7 +1,7 @@
 # Domain Design — event-driven-orders
 
-> **Version**: 0.4.2 (draft) — 2026-08-11
-> **Status**: ER diagram and event catalog (v0.2); Saga reliability details — outbox poller, retry/DLQ, edge cases — and scale assumptions (v0.3); pre-implementation review fixes — concurrency-safe state transitions, idempotency authority, envelope/outbox mapping, reservation granularity, producer-side poison, and the API state×operation contract (v0.4); editorial pass — authentication recorded in §7, cross-references made self-contained (v0.4.1, no design change). Customer master given a human-facing business key, unique per entity (v0.4.2).
+> **Version**: 0.4.3 (draft) — 2026-08-20
+> **Status**: ER diagram and event catalog (v0.2); Saga reliability details — outbox poller, retry/DLQ, edge cases — and scale assumptions (v0.3); pre-implementation review fixes — concurrency-safe state transitions, idempotency authority, envelope/outbox mapping, reservation granularity, producer-side poison, and the API state×operation contract (v0.4); editorial pass — authentication recorded in §7, cross-references made self-contained (v0.4.1, no design change). Customer master given a human-facing business key, unique per entity (v0.4.2). HTTP idempotency now rejects a key reused with a different request body — `orders.request_fingerprint` plus a 422 on mismatch — instead of silently replaying regardless of payload (v0.4.3).
 > Broker selection is settled in ADR-001 (Kafka) and ADR-002 (custom outbox poller).
 
 ---
@@ -91,6 +91,7 @@ erDiagram
         text order_number "human-facing key, unique per entity_id"
         text status "PENDING/CONFIRMED/RESERVED/RESERVATION_FAILED/CANCELLED"
         text idempotency_key "unique per (entity_id, key)"
+        text request_fingerprint "SHA-256 of canonicalised request body"
         text currency "ISO 4217, single seeded value in v0.5"
         date delivery_date "single date per order (v0.5)"
         timestamptz created_at
@@ -170,6 +171,7 @@ Both services own an `outbox` and a `processed_events` table because both act as
   `status` lifecycle: `PENDING → CONFIRMED → RESERVED | RESERVATION_FAILED`; `CANCELLED` is reserved for future user-initiated cancellation (per-state operation outcomes: §4.6).
   `order_number` is the human-facing business key (unique per `entity_id`), separate from the technical `id`; it is included from v0.5 — even though no numbering scheme beyond a simple sequence exists yet — because retrofitting it later would require backfilling every existing row with a number.
   `idempotency_key` is the HTTP-level deduplication key (client-supplied, unique per `(entity_id, idempotency_key)`); this UNIQUE constraint is the durable authority for HTTP idempotency, with Redis fronting it as a response cache, while the event-level mechanism is `processed_events` (see §4.4).
+  `request_fingerprint` is a SHA-256 digest of the canonicalised request body, stored alongside the claim so a key reused with a different body is detected as a client error rather than silently replayed (§4.4).
   `currency` (ISO 4217) is seeded as a single value in v0.5; it is carried on the order because a monetary amount recorded without its currency cannot be reinterpreted later without a breaking change to the event payload.
   Delivery date is a single header-level date in v0.5.
 - **order_lines** — `unit_price` is a snapshot of the item's list price at order time: an accepted order must not change retroactively when the price master changes.
@@ -271,12 +273,18 @@ Two independent layers:
 
 | Layer | Key | Authority | Protects against |
 |---|---|---|---|
-| HTTP | client-supplied `Idempotency-Key` header, unique per `(entity_id, key)` | `orders.idempotency_key` UNIQUE constraint (durable); Redis as a response cache in front | client retries creating duplicate orders |
+| HTTP | client-supplied `Idempotency-Key` header, unique per `(entity_id, key)` | `orders.idempotency_key` UNIQUE constraint (durable); Redis as a response cache in front | client retries creating duplicate orders; a reused key with a different body |
 | Event | `event_id` (outbox row UUID) | `processed_events` row (durable) | at-least-once redelivery (outbox poller resend, consumer restart/rebalance) |
 
 **HTTP layer — the constraint is the authority, Redis is only a cache.**
 The `orders` table carries `idempotency_key` UNIQUE per `(entity_id, idempotency_key)` (§3.2), and the order INSERT *is* the idempotency claim: a retried or concurrent `POST /orders` carrying the same key attempts a second INSERT, hits the unique violation, and the handler responds by loading and returning the already-created order (HTTP 200) instead of creating a new one.
 Because the claim is the same row write that creates the order, concurrency needs no separate lock — the second INSERT blocks on the unique index until the first commits, then sees the violation, the same mechanism that makes confirm safe under concurrency (§5.7).
+
+**A key reused with a different request body is a client error, not a replay.**
+`orders.request_fingerprint` (§3.2) stores a SHA-256 digest of the canonicalised request body, written alongside the idempotency claim in the same INSERT.
+On a unique-constraint hit, the handler compares the incoming fingerprint against the stored one before deciding what to return: a match is a genuine retry (HTTP 200, existing order); a mismatch means the same key was reused for a different order, and the handler returns 422 rather than silently substituting one client intent for another.
+This mirrors the industry-standard idempotency-key contract (Stripe, the IETF idempotency-key draft): a key guarantees "same key, same request", not "same key, whatever you send this time".
+
 Redis sits in front purely as a **response cache**: a successful create stores the response body under the idempotency key with a 24-hour TTL; a retry that hits the cache replays the stored response without touching Postgres.
 A cache miss — cold start, eviction, TTL expiry, or a Redis restart — falls through to the constraint, so **losing the Redis data is a latency regression, never a correctness one**.
 The durable guarantee lives in Postgres; Redis only makes the idempotent replay fast, exactly as the event layer keeps its guarantee in `processed_events` rather than in memory.
@@ -331,7 +339,7 @@ Inventory-worker treats it as a deterministic error and sends the event straight
 
 | Endpoint | Success | Client errors |
 |---|---|---|
-| `POST /orders` | 201 created / 200 idempotent replay (§4.4) | 422 (empty or duplicate lines, over the line cap) |
+| `POST /orders` | 201 created / 200 idempotent replay (§4.4) | 422 (empty or duplicate lines, over the line cap, idempotency key reused with a different body) |
 | `GET /orders/{id}` | 200 (status, lines, reservation summary) | 404 |
 | `POST /orders/{id}/confirm` | 200 (current status) | 404 |
 | `PATCH`/`PUT /orders/{id}` | 200 | 404 · 409 (not PENDING) · 422 |
