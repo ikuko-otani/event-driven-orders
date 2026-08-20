@@ -96,6 +96,7 @@ async def test_duplicate_order_number_within_entity_is_rejected(
             customer_id=customer.id,
             order_number=order_number,
             idempotency_key=f"key-{order_number}",
+            request_fingerprint=f"fp-{order_number}",
             currency="EUR",
             delivery_date=date(2026, 9, 1),
         )
@@ -125,6 +126,7 @@ async def test_duplicate_idempotency_key_within_entity_is_rejected(
             customer_id=customer.id,
             order_number=order_number,
             idempotency_key=idempotency_key,
+            request_fingerprint=f"fp-{idempotency_key}",
             currency="EUR",
             delivery_date=date(2026, 9, 1),
         )
@@ -152,6 +154,7 @@ async def test_invalid_order_status_is_rejected(db_session: AsyncSession) -> Non
         order_number="ORD-4",
         status="BOGUS",
         idempotency_key="key-4",
+        request_fingerprint="fp-4",
         currency="EUR",
         delivery_date=date(2026, 9, 1),
     )
@@ -175,6 +178,7 @@ async def test_duplicate_order_line_item_is_rejected(db_session: AsyncSession) -
         customer_id=customer.id,
         order_number="ORD-5",
         idempotency_key="key-5",
+        request_fingerprint="fp-5",
         currency="EUR",
         delivery_date=date(2026, 9, 1),
     )
