@@ -2,7 +2,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, Header, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from order_api.db import get_session
@@ -16,13 +16,18 @@ router = APIRouter(prefix="/orders", tags=["orders"])
 @router.post("", response_model=OrderRead, status_code=status.HTTP_201_CREATED)
 async def post_order(
     body: OrderCreate,
+    response: Response,
     x_entity_id: uuid.UUID = Header(...),
     idempotency_key: str = Header(...),
     session: AsyncSession = Depends(get_session),
 ) -> Order:
-    return await create_order(
+    order, created = await create_order(
         session,
         entity_id=x_entity_id,
         idempotency_key=idempotency_key,
         body=body,
     )
+
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    return order
