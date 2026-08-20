@@ -87,7 +87,9 @@ async def create_order(
     try:
         await session.flush()
     except IntegrityError as err:
-        if getattr(err.orig, "constraint_name", None) != IDEMPOTENCY_KEY_CONSTRAINT:
+        cause = getattr(err.orig, "__cause__", None)
+        constraint_name = getattr(cause, "constraint_name", None)
+        if constraint_name != IDEMPOTENCY_KEY_CONSTRAINT:
             raise
         await session.rollback()
         existing = await _get_by_idempotency_key(
