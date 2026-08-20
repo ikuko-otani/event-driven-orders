@@ -34,15 +34,24 @@ class Order(Base):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    entity_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sales_entities.id"), index=True)
-    customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.id"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sales_entities.id"), index=True
+    )
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("customers.id"), index=True
+    )
     order_number: Mapped[str] = mapped_column(String(30))
     status: Mapped[str] = mapped_column(String(20), default="PENDING")
     idempotency_key: Mapped[str] = mapped_column(String(100))
+    request_fingerprint: Mapped[str] = mapped_column(String(64))
     currency: Mapped[str] = mapped_column(String(3))
     delivery_date: Mapped[date] = mapped_column(Date)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     lines: Mapped[list["OrderLine"]] = relationship(
         back_populates="order", cascade="all, delete-orphan"
     )
@@ -54,7 +63,9 @@ class OrderLine(Base):
     __tablename__ = "order_lines"
     __table_args__ = (UniqueConstraint("order_id", "item_id"),)
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id"), index=True)
     item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("items.id"), index=True)
     quantity: Mapped[int] = mapped_column(Integer)
