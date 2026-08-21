@@ -49,6 +49,16 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:8.10.1-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   api:
     build:
       context: .
@@ -61,6 +71,8 @@ services:
       postgres:
         condition: service_healthy
       redpanda:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test:
