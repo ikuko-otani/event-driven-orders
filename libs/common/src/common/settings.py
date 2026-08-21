@@ -20,13 +20,13 @@ class DatabaseSettings(BaseSettings):
 
     @property
     def sync_url(self) -> str:
-        return f"postgresql+psycopg://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+        return (
+            f"postgresql+psycopg://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+        )
 
     @property
     def async_url(self) -> str:
-        return self.sync_url.replace(
-            "postgresql+psycopg://", "postgresql+asyncpg://", 1
-        )
+        return self.sync_url.replace("postgresql+psycopg://", "postgresql+asyncpg://", 1)
 
 
 class RedisSettings(BaseSettings):
