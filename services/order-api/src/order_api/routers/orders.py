@@ -11,7 +11,7 @@ from order_api.cache import get_cached_response, get_redis, set_cached_response
 from order_api.db import get_session
 from order_api.models import Order
 from order_api.schemas.orders import OrderCreate, OrderRead
-from order_api.services.orders import create_order
+from order_api.services.orders import create_order, fingerprint
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -25,12 +25,14 @@ async def post_order(
     session: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
 ) -> Order | dict[str, Any]:
+    request_fingerprint = fingerprint(body)
     cached = await get_cached_response(
         redis, entity_id=x_entity_id, idempotency_key=idempotency_key
     )
-    if cached is not None:
+    if cached is not None and cached["request_fingerprint"] == request_fingerprint:
         response.status_code = status.HTTP_200_OK
-        return cached
+        cached_order: dict[str, Any] = cached["order"]
+        return cached_order
 
     order, created = await create_order(
         session,
@@ -45,6 +47,9 @@ async def post_order(
         redis,
         entity_id=x_entity_id,
         idempotency_key=idempotency_key,
-        body=OrderRead.model_validate(order).model_dump(mode="json"),
+        body={
+            "request_fingerprint": request_fingerprint,
+            "order": OrderRead.model_validate(order).model_dump(mode="json"),
+        },
     )
     return order
