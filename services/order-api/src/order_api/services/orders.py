@@ -33,7 +33,7 @@ async def _get_by_idempotency_key(
     return result.scalar_one()
 
 
-def _fingerprint(body: OrderCreate) -> str:
+def fingerprint(body: OrderCreate) -> str:
     canonical = body.model_dump_json()
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -63,14 +63,14 @@ async def create_order(
         raise HTTPException(422, detail=f"item_id not found: {missing}")
 
     order_number = await _next_order_number(session)
-    fingerprint = _fingerprint(body)
+    request_fingerprint = fingerprint(body)
 
     order = Order(
         entity_id=entity_id,
         customer_id=body.customer_id,
         order_number=order_number,
         idempotency_key=idempotency_key,
-        request_fingerprint=fingerprint,
+        request_fingerprint=request_fingerprint,
         currency=body.currency,
         delivery_date=body.delivery_date,
     )
@@ -95,7 +95,7 @@ async def create_order(
         existing = await _get_by_idempotency_key(
             session, entity_id=entity_id, idempotency_key=idempotency_key
         )
-        if existing.request_fingerprint != fingerprint:
+        if existing.request_fingerprint != request_fingerprint:
             raise HTTPException(
                 422, detail="idempotency key reused with a different request body"
             ) from err

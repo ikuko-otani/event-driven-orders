@@ -1,14 +1,17 @@
 """HTTP routes for order creation."""
 
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Response, status
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from order_api.cache import get_cached_response, get_redis, set_cached_response
 from order_api.db import get_session
 from order_api.models import Order
 from order_api.schemas.orders import OrderCreate, OrderRead
-from order_api.services.orders import create_order
+from order_api.services.orders import create_order, fingerprint
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -20,7 +23,17 @@ async def post_order(
     x_entity_id: uuid.UUID = Header(...),
     idempotency_key: str = Header(...),
     session: AsyncSession = Depends(get_session),
-) -> Order:
+    redis: Redis = Depends(get_redis),
+) -> Order | dict[str, Any]:
+    request_fingerprint = fingerprint(body)
+    cached = await get_cached_response(
+        redis, entity_id=x_entity_id, idempotency_key=idempotency_key
+    )
+    if cached is not None and cached["request_fingerprint"] == request_fingerprint:
+        response.status_code = status.HTTP_200_OK
+        cached_order: dict[str, Any] = cached["order"]
+        return cached_order
+
     order, created = await create_order(
         session,
         entity_id=x_entity_id,
@@ -30,4 +43,13 @@ async def post_order(
 
     if not created:
         response.status_code = status.HTTP_200_OK
+    await set_cached_response(
+        redis,
+        entity_id=x_entity_id,
+        idempotency_key=idempotency_key,
+        body={
+            "request_fingerprint": request_fingerprint,
+            "order": OrderRead.model_validate(order).model_dump(mode="json"),
+        },
+    )
     return order

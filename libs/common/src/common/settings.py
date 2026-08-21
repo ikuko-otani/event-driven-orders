@@ -27,3 +27,16 @@ class DatabaseSettings(BaseSettings):
     @property
     def async_url(self) -> str:
         return self.sync_url.replace("postgresql+psycopg://", "postgresql+asyncpg://", 1)
+
+
+class RedisSettings(BaseSettings):
+    """Redis connection settings for the idempotency response cache (design §4.4)."""
+
+    model_config = SettingsConfigDict(env_prefix="REDIS_")
+
+    host: str = "localhost"
+    port: int = 6379
+
+    @property
+    def url(self) -> str:
+        return f"redis://{self.host}:{self.port}/0"

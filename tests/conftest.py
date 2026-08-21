@@ -14,6 +14,7 @@ import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -22,8 +23,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from testcontainers.community.postgres import PostgresContainer
+from testcontainers.community.redis import RedisContainer
 
-from common.settings import DatabaseSettings
+from common.settings import DatabaseSettings, RedisSettings
 from order_api.main import app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -63,6 +65,21 @@ def migrated_database(postgres_container: PostgresContainer) -> str:
     return DatabaseSettings().async_url
 
 
+@pytest.fixture(scope="session")
+def redis_container() -> Generator[RedisContainer, None, None]:
+    """One Redis container for the whole test session."""
+    with RedisContainer("redis:8.10.1-alpine") as redis:
+        yield redis
+
+
+@pytest.fixture(scope="session")
+def configured_redis(redis_container: RedisContainer) -> str:
+    """Point REDIS_* at the container, the same way migrated_database points DB_*."""
+    os.environ["REDIS_HOST"] = redis_container.get_container_host_ip()
+    os.environ["REDIS_PORT"] = str(redis_container.get_exposed_port(redis_container.port))
+    return RedisSettings().url
+
+
 @pytest_asyncio.fixture
 async def engine(migrated_database: str) -> AsyncGenerator[AsyncEngine, None]:
     """A fresh async engine per test, so no connection state leaks between tests."""
@@ -94,6 +111,21 @@ async def clean_db(engine: AsyncEngine) -> AsyncGenerator[None, None]:
 
 
 @pytest_asyncio.fixture
+async def redis_client(configured_redis: str) -> AsyncGenerator[Redis, None]:
+    """One Redis client per test."""
+    client = Redis.from_url(configured_redis)
+    yield client
+    await client.aclose()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def clean_redis(redis_client: Redis) -> AsyncGenerator[None, None]:
+    """Empty the cache before each test, mirroring clean_db for Postgres."""
+    await redis_client.flushdb()
+    yield
+
+
+@pytest_asyncio.fixture
 async def db_session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
     """One AsyncSession per test."""
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -102,7 +134,9 @@ async def db_session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest_asyncio.fixture
-async def api_client(migrated_database: str) -> AsyncGenerator[AsyncClient, None]:
+async def api_client(
+    migrated_database: str, configured_redis: str
+) -> AsyncGenerator[AsyncClient, None]:
     """An HTTP client wired to the real app, with the app's own lifespan run around it."""
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app)

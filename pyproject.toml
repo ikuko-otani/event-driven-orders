@@ -9,7 +9,7 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
-    "testcontainers[postgres]>=4.8",
+    "testcontainers[postgres,redis]>=4.8",
 ]
 
 [tool.ruff]
