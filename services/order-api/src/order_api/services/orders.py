@@ -38,6 +38,19 @@ def fingerprint(body: OrderCreate) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+async def get_order(session: AsyncSession, *, entity_id: uuid.UUID, order_id: uuid.UUID) -> Order:
+    """Load one order with its lines, scoped to the caller's entity."""
+    result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.lines))
+        .where(Order.id == order_id, Order.entity_id == entity_id)
+    )
+    order = result.scalar_one_or_none()
+    if order is None:
+        raise HTTPException(404, detail="order not found")
+    return order
+
+
 async def create_order(
     session: AsyncSession,
     *,
