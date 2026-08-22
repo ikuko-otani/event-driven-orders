@@ -16,7 +16,7 @@ from order_api.schemas.orders import OrderCreate
 IDEMPOTENCY_KEY_CONSTRAINT = "uq_orders_entity_id_idempotency_key"
 
 
-async def _next_order_number(session: AsyncSession) -> str:
+async def next_order_number(session: AsyncSession) -> str:
     result = await session.execute(select(func.nextval("orders.order_number_seq")))
     value = result.scalar_one()
     return f"ORD-{value:06d}"
@@ -62,7 +62,7 @@ async def create_order(
     if missing:
         raise HTTPException(422, detail=f"item_id not found: {missing}")
 
-    order_number = await _next_order_number(session)
+    order_number = await next_order_number(session)
     request_fingerprint = fingerprint(body)
 
     order = Order(
