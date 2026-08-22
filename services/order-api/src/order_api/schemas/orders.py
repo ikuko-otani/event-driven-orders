@@ -41,3 +41,17 @@ class OrderRead(BaseModel):
     lines: list[OrderLineRead]
 
     model_config = {"from_attributes": True}
+
+
+class OrderSummary(BaseModel):
+    """One row of the order list: header fields only, no lines."""
+
+    id: uuid.UUID
+    order_number: str
+    customer_id: uuid.UUID
+    status: str
+    currency: str
+    delivery_date: date
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

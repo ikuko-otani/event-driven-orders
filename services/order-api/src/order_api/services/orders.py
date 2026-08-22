@@ -3,6 +3,7 @@
 import hashlib
 import uuid
 from collections import Counter
+from collections.abc import Sequence
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -16,7 +17,7 @@ from order_api.schemas.orders import OrderCreate
 IDEMPOTENCY_KEY_CONSTRAINT = "uq_orders_entity_id_idempotency_key"
 
 
-async def _next_order_number(session: AsyncSession) -> str:
+async def next_order_number(session: AsyncSession) -> str:
     result = await session.execute(select(func.nextval("orders.order_number_seq")))
     value = result.scalar_one()
     return f"ORD-{value:06d}"
@@ -36,6 +37,39 @@ async def _get_by_idempotency_key(
 def fingerprint(body: OrderCreate) -> str:
     canonical = body.model_dump_json()
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+async def get_order(session: AsyncSession, *, entity_id: uuid.UUID, order_id: uuid.UUID) -> Order:
+    """Load one order with its lines, scoped to the caller's entity."""
+    result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.lines))
+        .where(Order.id == order_id, Order.entity_id == entity_id)
+    )
+    order = result.scalar_one_or_none()
+    if order is None:
+        raise HTTPException(404, detail="order not found")
+    return order
+
+
+async def list_orders(
+    session: AsyncSession,
+    *,
+    entity_id: uuid.UUID,
+    status: str | None = None,
+    customer_id: uuid.UUID | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> Sequence[Order]:
+    """List one entity's orders, newest first, without their lines."""
+    stmt = select(Order).where(Order.entity_id == entity_id)
+    if status is not None:
+        stmt = stmt.where(Order.status == status)
+    if customer_id is not None:
+        stmt = stmt.where(Order.customer_id == customer_id)
+    stmt = stmt.order_by(Order.created_at.desc(), Order.order_number.desc())
+    result = await session.execute(stmt.limit(limit).offset(offset))
+    return result.scalars().all()
 
 
 async def create_order(
@@ -62,7 +96,7 @@ async def create_order(
     if missing:
         raise HTTPException(422, detail=f"item_id not found: {missing}")
 
-    order_number = await _next_order_number(session)
+    order_number = await next_order_number(session)
     request_fingerprint = fingerprint(body)
 
     order = Order(
