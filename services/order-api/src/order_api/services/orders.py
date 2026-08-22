@@ -3,6 +3,7 @@
 import hashlib
 import uuid
 from collections import Counter
+from collections.abc import Sequence
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -49,6 +50,26 @@ async def get_order(session: AsyncSession, *, entity_id: uuid.UUID, order_id: uu
     if order is None:
         raise HTTPException(404, detail="order not found")
     return order
+
+
+async def list_orders(
+    session: AsyncSession,
+    *,
+    entity_id: uuid.UUID,
+    status: str | None = None,
+    customer_id: uuid.UUID | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> Sequence[Order]:
+    """List one entity's orders, newest first, without their lines."""
+    stmt = select(Order).where(Order.entity_id == entity_id)
+    if status is not None:
+        stmt = stmt.where(Order.status == status)
+    if customer_id is not None:
+        stmt = stmt.where(Order.customer_id == customer_id)
+    stmt = stmt.order_by(Order.created_at.desc(), Order.order_number.desc())
+    result = await session.execute(stmt.limit(limit).offset(offset))
+    return result.scalars().all()
 
 
 async def create_order(
