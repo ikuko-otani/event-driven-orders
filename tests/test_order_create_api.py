@@ -37,6 +37,8 @@ async def test_valid_order_creation_returns_201_with_snapshotted_prices(
     assert body["order_number"].startswith("ORD-")
     assert body["status"] == "PENDING"
     assert body["lines"] == [{"item_id": str(item.id), "quantity": 2, "unit_price": "1234.50"}]
+    reread = await api_client.get(f"/orders/{body['id']}", headers={"X-Entity-Id": str(entity.id)})
+    assert reread.json()["lines"] == body["lines"]
 
 
 @pytest.mark.asyncio
