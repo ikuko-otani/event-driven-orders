@@ -4,7 +4,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from factories import create_customer, create_item, create_order, create_sales_entity
+from factories import make_customer, make_item, make_order, make_sales_entity
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,9 +12,9 @@ from order_api.models import Customer, Item, SalesEntity
 
 
 async def _seed_masters(session: AsyncSession) -> tuple[SalesEntity, Customer, Item]:
-    entity = await create_sales_entity(session)
-    customer = await create_customer(session, entity=entity)
-    item = await create_item(session)
+    entity = await make_sales_entity(session)
+    customer = await make_customer(session, entity=entity)
+    item = await make_item(session)
     return entity, customer, item
 
 
@@ -23,7 +23,7 @@ async def test_patch_updates_the_delivery_date(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
     entity, customer, item = await _seed_masters(db_session)
-    order = await create_order(db_session, entity=entity, customer=customer, lines=[(item, 2)])
+    order = await make_order(db_session, entity=entity, customer=customer, lines=[(item, 2)])
     await db_session.commit()
 
     response = await api_client.patch(
@@ -43,7 +43,7 @@ async def test_patch_replaces_the_lines_at_the_current_master_price(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
     entity, customer, item = await _seed_masters(db_session)
-    order = await create_order(db_session, entity=entity, customer=customer, lines=[(item, 1)])
+    order = await make_order(db_session, entity=entity, customer=customer, lines=[(item, 1)])
     item.list_price = Decimal("2500.00")
     await db_session.commit()
 
@@ -64,7 +64,7 @@ async def test_patch_on_a_confirmed_order_is_rejected(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
     entity, customer, item = await _seed_masters(db_session)
-    order = await create_order(
+    order = await make_order(
         db_session, entity=entity, customer=customer, lines=[(item, 1)], status="CONFIRMED"
     )
     await db_session.commit()
@@ -101,8 +101,8 @@ async def test_patch_of_another_entitys_order_returns_404(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
     owner, customer, item = await _seed_masters(db_session)
-    intruder = await create_sales_entity(db_session, code="ENT-02", name="Another Co.")
-    order = await create_order(db_session, entity=owner, customer=customer, lines=[(item, 1)])
+    intruder = await make_sales_entity(db_session, code="ENT-02", name="Another Co.")
+    order = await make_order(db_session, entity=owner, customer=customer, lines=[(item, 1)])
     await db_session.commit()
 
     response = await api_client.patch(
@@ -119,7 +119,7 @@ async def test_patch_with_duplicate_item_ids_is_rejected(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
     entity, customer, item = await _seed_masters(db_session)
-    order = await create_order(db_session, entity=entity, customer=customer, lines=[(item, 1)])
+    order = await make_order(db_session, entity=entity, customer=customer, lines=[(item, 1)])
     await db_session.commit()
 
     response = await api_client.patch(
@@ -142,7 +142,7 @@ async def test_patch_without_an_updatable_field_is_rejected(
     db_session: AsyncSession, api_client: AsyncClient, body: dict[str, str]
 ) -> None:
     entity, customer, item = await _seed_masters(db_session)
-    order = await create_order(db_session, entity=entity, customer=customer, lines=[(item, 1)])
+    order = await make_order(db_session, entity=entity, customer=customer, lines=[(item, 1)])
     await db_session.commit()
 
     response = await api_client.patch(

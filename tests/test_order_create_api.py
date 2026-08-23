@@ -4,7 +4,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from factories import create_customer, create_item, create_sales_entity
+from factories import make_customer, make_item, make_sales_entity
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,9 +16,9 @@ from order_api.models import Order
 async def test_valid_order_creation_returns_201_with_snapshotted_prices(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
-    entity = await create_sales_entity(db_session)
-    customer = await create_customer(db_session, entity=entity)
-    item = await create_item(db_session, list_price=Decimal("1234.50"))
+    entity = await make_sales_entity(db_session)
+    customer = await make_customer(db_session, entity=entity)
+    item = await make_item(db_session, list_price=Decimal("1234.50"))
     await db_session.commit()
 
     response = await api_client.post(
@@ -43,8 +43,8 @@ async def test_valid_order_creation_returns_201_with_snapshotted_prices(
 async def test_order_creation_with_no_lines_is_rejected(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
-    entity = await create_sales_entity(db_session)
-    customer = await create_customer(db_session, entity=entity)
+    entity = await make_sales_entity(db_session)
+    customer = await make_customer(db_session, entity=entity)
     await db_session.commit()
 
     response = await api_client.post(
@@ -65,8 +65,8 @@ async def test_order_creation_with_no_lines_is_rejected(
 async def test_order_creation_over_line_cap_is_rejected(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
-    entity = await create_sales_entity(db_session)
-    customer = await create_customer(db_session, entity=entity)
+    entity = await make_sales_entity(db_session)
+    customer = await make_customer(db_session, entity=entity)
     await db_session.commit()
 
     lines = [{"item_id": str(uuid.uuid4()), "quantity": 1} for _ in range(51)]
@@ -88,9 +88,9 @@ async def test_order_creation_over_line_cap_is_rejected(
 async def test_order_creation_with_duplicate_item_id_is_rejected(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
-    entity = await create_sales_entity(db_session)
-    customer = await create_customer(db_session, entity=entity)
-    item = await create_item(db_session)
+    entity = await make_sales_entity(db_session)
+    customer = await make_customer(db_session, entity=entity)
+    item = await make_item(db_session)
     await db_session.commit()
 
     response = await api_client.post(
@@ -114,9 +114,9 @@ async def test_order_creation_with_duplicate_item_id_is_rejected(
 async def test_duplicate_idempotency_key_replays_the_existing_order(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
-    entity = await create_sales_entity(db_session)
-    customer = await create_customer(db_session, entity=entity)
-    item = await create_item(db_session)
+    entity = await make_sales_entity(db_session)
+    customer = await make_customer(db_session, entity=entity)
+    item = await make_item(db_session)
     await db_session.commit()
 
     payload = {
@@ -144,9 +144,9 @@ async def test_duplicate_idempotency_key_replays_the_existing_order(
 async def test_duplicate_idempotency_key_with_different_body_is_rejected(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
-    entity = await create_sales_entity(db_session)
-    customer = await create_customer(db_session, entity=entity)
-    item = await create_item(db_session)
+    entity = await make_sales_entity(db_session)
+    customer = await make_customer(db_session, entity=entity)
+    item = await make_item(db_session)
     await db_session.commit()
 
     headers = {"X-Entity-Id": str(entity.id), "Idempotency-Key": "mismatch-key"}

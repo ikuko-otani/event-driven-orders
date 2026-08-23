@@ -4,7 +4,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from factories import create_customer, create_item, create_order, create_sales_entity
+from factories import make_customer, make_item, make_order, make_sales_entity
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,10 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 async def test_get_order_returns_the_order_with_its_lines(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
-    entity = await create_sales_entity(db_session)
-    customer = await create_customer(db_session, entity=entity)
-    item = await create_item(db_session, list_price=Decimal("1234.50"))
-    order = await create_order(db_session, entity=entity, customer=customer, lines=[(item, 3)])
+    entity = await make_sales_entity(db_session)
+    customer = await make_customer(db_session, entity=entity)
+    item = await make_item(db_session, list_price=Decimal("1234.50"))
+    order = await make_order(db_session, entity=entity, customer=customer, lines=[(item, 3)])
     await db_session.commit()
 
     response = await api_client.get(f"/orders/{order.id}", headers={"X-Entity-Id": str(entity.id)})
@@ -33,7 +33,7 @@ async def test_get_order_returns_the_order_with_its_lines(
 async def test_get_order_with_an_unknown_id_returns_404(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
-    entity = await create_sales_entity(db_session)
+    entity = await make_sales_entity(db_session)
     await db_session.commit()
 
     unknown_order_id = uuid.uuid4()
@@ -48,11 +48,11 @@ async def test_get_order_with_an_unknown_id_returns_404(
 async def test_get_order_of_another_entity_returns_404(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
-    owner = await create_sales_entity(db_session)
-    intruder = await create_sales_entity(db_session, code="ENT-02", name="Another Co.")
-    customer = await create_customer(db_session, entity=owner)
-    item = await create_item(db_session)
-    order = await create_order(db_session, entity=owner, customer=customer, lines=[(item, 1)])
+    owner = await make_sales_entity(db_session)
+    intruder = await make_sales_entity(db_session, code="ENT-02", name="Another Co.")
+    customer = await make_customer(db_session, entity=owner)
+    item = await make_item(db_session)
+    order = await make_order(db_session, entity=owner, customer=customer, lines=[(item, 1)])
     await db_session.commit()
 
     response = await api_client.get(
