@@ -21,6 +21,15 @@ class OrderCreate(BaseModel):
     lines: list[OrderLineCreate] = Field(min_length=1, max_length=MAX_LINES)
 
 
+class OrderUpdate(BaseModel):
+    """Fields a PENDING order accepts; anything else is refused (design §4.6)."""
+
+    delivery_date: date | None = None
+    lines: list[OrderLineCreate] | None = Field(None, min_length=1, max_length=MAX_LINES)
+
+    model_config = {"extra": "forbid"}
+
+
 class OrderLineRead(BaseModel):
     item_id: uuid.UUID
     quantity: int
