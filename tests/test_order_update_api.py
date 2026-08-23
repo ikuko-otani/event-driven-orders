@@ -54,7 +54,8 @@ async def test_patch_replaces_the_lines_at_the_current_master_price(
     )
 
     assert response.status_code == 200
-    assert response.json()["lines"] == [
+    reread = await api_client.get(f"/orders/{order.id}", headers={"X-Entity-Id": str(entity.id)})
+    assert reread.json()["lines"] == [
         {"item_id": str(item.id), "quantity": 4, "unit_price": "2500.00"}
     ]
 
@@ -65,7 +66,11 @@ async def test_patch_on_a_confirmed_order_is_rejected(
 ) -> None:
     entity, customer, item = await _seed_masters(db_session)
     order = await make_order(
-        db_session, entity=entity, customer=customer, lines=[(item, 1)], status="CONFIRMED"
+        db_session,
+        entity=entity,
+        customer=customer,
+        lines=[(item, 1)],
+        status="CONFIRMED",
     )
     await db_session.commit()
 
