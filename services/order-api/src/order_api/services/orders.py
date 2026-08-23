@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from order_api.models import Customer, Item, Order, OrderLine
-from order_api.schemas.orders import OrderCreate, OrderLineCreate
+from order_api.schemas.orders import OrderCreate, OrderLineCreate, OrderUpdate
 
 IDEMPOTENCY_KEY_CONSTRAINT = "uq_orders_entity_id_idempotency_key"
 
@@ -143,3 +143,45 @@ async def create_order(
             ) from err
         return existing, False
     return order, True
+
+
+async def update_order(
+    session: AsyncSession,
+    *,
+    entity_id: uuid.UUID,
+    order_id: uuid.UUID,
+    body: OrderUpdate,
+) -> Order:
+    """Update a PENDING order in place; refuse it once confirmed (design §4.6)."""
+    if body.delivery_date is None and body.lines is None:
+        raise HTTPException(422, detail="no updatable fields provided")
+
+    result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.lines))
+        .where(Order.id == order_id, Order.entity_id == entity_id)
+        .with_for_update()
+    )
+    order = result.scalar_one_or_none()
+    if order is None:
+        raise HTTPException(404, detail="order not found")
+    if order.status != "PENDING":
+        raise HTTPException(409, detail=f"order is {order.status} and no longer editable")
+
+    if body.delivery_date is not None:
+        order.delivery_date = body.delivery_date
+
+    if body.lines is not None:
+        items_by_id = await _resolve_line_items(session, body.lines)
+        order.lines.clear()
+        await session.flush()
+        order.lines = [
+            OrderLine(
+                item_id=line.item_id,
+                quantity=line.quantity,
+                unit_price=items_by_id[line.item_id].list_price,
+            )
+            for line in body.lines
+        ]
+        await session.flush()
+    return order
