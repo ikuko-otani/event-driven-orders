@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from order_api.models import Customer, Item, Order, OrderLine
-from order_api.schemas.orders import OrderCreate
+from order_api.schemas.orders import OrderCreate, OrderLineCreate, OrderUpdate
 
 IDEMPOTENCY_KEY_CONSTRAINT = "uq_orders_entity_id_idempotency_key"
 
@@ -72,6 +72,25 @@ async def list_orders(
     return result.scalars().all()
 
 
+async def _resolve_line_items(
+    session: AsyncSession, lines: Sequence[OrderLineCreate]
+) -> dict[uuid.UUID, Item]:
+    """Validate the requested lines and return the items they name, keyed by id."""
+    duplicates = [
+        item_id for item_id, count in Counter(line.item_id for line in lines).items() if count > 1
+    ]
+    if duplicates:
+        raise HTTPException(422, detail=f"duplicate item_id in lines: {duplicates}")
+
+    item_ids = [line.item_id for line in lines]
+    result = await session.execute(select(Item).where(Item.id.in_(item_ids)))
+    items_by_id = {item.id: item for item in result.scalars()}
+    missing = set(item_ids) - items_by_id.keys()
+    if missing:
+        raise HTTPException(422, detail=f"item_id not found: {missing}")
+    return items_by_id
+
+
 async def create_order(
     session: AsyncSession,
     *,
@@ -79,22 +98,11 @@ async def create_order(
     idempotency_key: str,
     body: OrderCreate,
 ) -> tuple[Order, bool]:
-    duplicate_items = [
-        item for item, count in Counter(line.item_id for line in body.lines).items() if count > 1
-    ]
-    if duplicate_items:
-        raise HTTPException(422, detail=f"duplicate item_id in lines: {duplicate_items}")
-
     customer = await session.get(Customer, body.customer_id)
     if customer is None or customer.entity_id != entity_id:
         raise HTTPException(422, detail="customer_id does not exist for this entity")
 
-    item_ids = [line.item_id for line in body.lines]
-    items_result = await session.execute(select(Item).where(Item.id.in_(item_ids)))
-    items_by_id = {item.id: item for item in items_result.scalars()}
-    missing = set(item_ids) - items_by_id.keys()
-    if missing:
-        raise HTTPException(422, detail=f"item_id not found: {missing}")
+    items_by_id = await _resolve_line_items(session, body.lines)
 
     order_number = await next_order_number(session)
     request_fingerprint = fingerprint(body)
@@ -135,3 +143,45 @@ async def create_order(
             ) from err
         return existing, False
     return order, True
+
+
+async def update_order(
+    session: AsyncSession,
+    *,
+    entity_id: uuid.UUID,
+    order_id: uuid.UUID,
+    body: OrderUpdate,
+) -> Order:
+    """Update a PENDING order in place; refuse it once confirmed (design §4.6)."""
+    if body.delivery_date is None and body.lines is None:
+        raise HTTPException(422, detail="no updatable fields provided")
+
+    result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.lines))
+        .where(Order.id == order_id, Order.entity_id == entity_id)
+        .with_for_update()
+    )
+    order = result.scalar_one_or_none()
+    if order is None:
+        raise HTTPException(404, detail="order not found")
+    if order.status != "PENDING":
+        raise HTTPException(409, detail=f"order is {order.status} and no longer editable")
+
+    if body.delivery_date is not None:
+        order.delivery_date = body.delivery_date
+
+    if body.lines is not None:
+        items_by_id = await _resolve_line_items(session, body.lines)
+        order.lines.clear()
+        await session.flush()
+        order.lines = [
+            OrderLine(
+                item_id=line.item_id,
+                quantity=line.quantity,
+                unit_price=items_by_id[line.item_id].list_price,
+            )
+            for line in body.lines
+        ]
+        await session.flush()
+    return order

@@ -1,7 +1,7 @@
 """Tests specific to the Redis response cache layer (design §4.4)."""
 
 import pytest
-from factories import create_customer, create_item, create_sales_entity
+from factories import make_customer, make_item, make_sales_entity
 from httpx import AsyncClient
 from redis.asyncio import Redis
 from sqlalchemy import text
@@ -12,9 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 async def test_cache_hit_bypasses_the_db_fingerprint_check(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
-    entity = await create_sales_entity(db_session)
-    customer = await create_customer(db_session, entity=entity)
-    item = await create_item(db_session)
+    entity = await make_sales_entity(db_session)
+    customer = await make_customer(db_session, entity=entity)
+    item = await make_item(db_session)
     await db_session.commit()
 
     headers = {"X-Entity-Id": str(entity.id), "Idempotency-Key": "cache-hit-key"}
@@ -44,9 +44,9 @@ async def test_cache_hit_bypasses_the_db_fingerprint_check(
 async def test_cached_response_carries_a_24_hour_ttl(
     db_session: AsyncSession, api_client: AsyncClient, redis_client: Redis
 ) -> None:
-    entity = await create_sales_entity(db_session)
-    customer = await create_customer(db_session, entity=entity)
-    item = await create_item(db_session)
+    entity = await make_sales_entity(db_session)
+    customer = await make_customer(db_session, entity=entity)
+    item = await make_item(db_session)
     await db_session.commit()
 
     headers = {"X-Entity-Id": str(entity.id), "Idempotency-Key": "ttl-key"}
@@ -67,9 +67,9 @@ async def test_cached_response_carries_a_24_hour_ttl(
 async def test_cache_miss_falls_back_to_the_db_constraint(
     db_session: AsyncSession, api_client: AsyncClient, redis_client: Redis
 ) -> None:
-    entity = await create_sales_entity(db_session)
-    customer = await create_customer(db_session, entity=entity)
-    item = await create_item(db_session)
+    entity = await make_sales_entity(db_session)
+    customer = await make_customer(db_session, entity=entity)
+    item = await make_item(db_session)
     await db_session.commit()
 
     headers = {"X-Entity-Id": str(entity.id), "Idempotency-Key": "fallback-key"}

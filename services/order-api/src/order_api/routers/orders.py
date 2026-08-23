@@ -11,8 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from order_api.cache import get_cached_response, get_redis, set_cached_response
 from order_api.db import get_session
 from order_api.models import Order
-from order_api.schemas.orders import OrderCreate, OrderRead, OrderSummary
-from order_api.services.orders import create_order, fingerprint, get_order, list_orders
+from order_api.schemas.orders import OrderCreate, OrderRead, OrderSummary, OrderUpdate
+from order_api.services.orders import (
+    create_order,
+    fingerprint,
+    get_order,
+    list_orders,
+    update_order,
+)
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -82,3 +88,13 @@ async def get_order_list(
         limit=limit,
         offset=offset,
     )
+
+
+@router.patch("/{order_id}", response_model=OrderRead)
+async def patch_order(
+    order_id: uuid.UUID,
+    body: OrderUpdate,
+    x_entity_id: uuid.UUID = Header(...),
+    session: AsyncSession = Depends(get_session),
+) -> Order:
+    return await update_order(session, entity_id=x_entity_id, order_id=order_id, body=body)

@@ -1,7 +1,7 @@
 # Domain Design — event-driven-orders
 
-> **Version**: 0.4.3 (draft) — 2026-08-20
-> **Status**: ER diagram and event catalog (v0.2); Saga reliability details — outbox poller, retry/DLQ, edge cases — and scale assumptions (v0.3); pre-implementation review fixes — concurrency-safe state transitions, idempotency authority, envelope/outbox mapping, reservation granularity, producer-side poison, and the API state×operation contract (v0.4); editorial pass — authentication recorded in §7, cross-references made self-contained (v0.4.1, no design change). Customer master given a human-facing business key, unique per entity (v0.4.2). HTTP idempotency now rejects a key reused with a different request body — `orders.request_fingerprint` plus a 422 on mismatch — instead of silently replaying regardless of payload (v0.4.3).
+> **Version**: 0.4.4 (draft) — 2026-08-23
+> **Status**: ER diagram and event catalog (v0.2); Saga reliability details — outbox poller, retry/DLQ, edge cases — and scale assumptions (v0.3); pre-implementation review fixes — concurrency-safe state transitions, idempotency authority, envelope/outbox mapping, reservation granularity, producer-side poison, and the API state×operation contract (v0.4); editorial pass — authentication recorded in §7, cross-references made self-contained (v0.4.1, no design change). Customer master given a human-facing business key, unique per entity (v0.4.2). HTTP idempotency now rejects a key reused with a different request body — `orders.request_fingerprint` plus a 422 on mismatch — instead of silently replaying regardless of payload (v0.4.3). The order API's read surface and its entity scoping are now recorded: `GET /orders` added to the error catalog, order endpoints scoped by a required `X-Entity-Id` header with cross-entity access reported as 404, and the state guard for an update that also rewrites child rows stated as a locking read (v0.4.4).
 > Broker selection is settled in ADR-001 (Kafka) and ADR-002 (custom outbox poller).
 
 ---
@@ -52,7 +52,7 @@ v0.5 models the **sell side only**: order intake and inventory reservation, incl
 
 **Stack**: order-api is a FastAPI application; inventory-worker is a Python consumer; PostgreSQL backs both schemas, and Kafka runs as a single-node Redpanda locally (ADR-001).
 
-**Multi-entity note**: the schema and event envelope carry an `entity_id` (sales company) from day one, but v0.5 seeds exactly **one** entity and implements no entity-scoped features.
+**Multi-entity note**: the schema and event envelope carry an `entity_id` (sales company) from day one, but v0.5 seeds exactly **one** entity and implements no per-entity behaviour beyond scoping the order API to the caller's entity (§4.6).
 Rationale in §3.2 and §7.
 
 **De-scoping order** (if capacity runs short, applied in this order): the multi-entity functional layer (§7) first, then the `customers` master (§3.2), then simplify observability to structured logging only. (Stretch items are by definition already out of v0.5, §7.)
@@ -160,8 +160,8 @@ Both services own an `outbox` and a `processed_events` table because both act as
 ### 3.2 Entity notes
 
 - **sales_entities** — master of sales companies (corporate entities), the "multi-entity" axis common in accounting/finance SaaS.
-  v0.5 seeds exactly one entity and implements no entity-scoped features.
-  The `entity_id` column is nevertheless baked into the schema and the event envelope from day one: retrofitting it later means rewriting every table and every event, while deferring only the *functional* layer (data-isolation guarantees, per-entity document numbering, API scoping) keeps the de-scoping decision reversible (§7).
+  v0.5 seeds exactly one entity; the only entity-scoped behaviour it implements is the order API's request scoping (§4.6).
+  The `entity_id` column is nevertheless baked into the schema and the event envelope from day one: retrofitting it later means rewriting every table and every event, while deferring most of the *functional* layer (data-isolation guarantees, per-entity document numbering) keeps the de-scoping decision reversible (§7).
 - **customers** — seeded master data, scoped to a sales entity; no CRUD API in v0.5.
   Exists to keep the FK design realistic instead of a free-text customer name.
   `code` is the human-facing business key, carrying that same argument one step further: a customer master identified only by a name is exactly the unrealistic shape this table exists to avoid.
@@ -312,6 +312,13 @@ The outbox supplies a fresh UUID per event for free, so `event_id` deduplication
 | CANCELLED *(future)* | 200 | 409 | 409 |
 | *(absent)* | 404 | 404 | 404 |
 
+An operation that also rewrites child rows — `PATCH` replacing `order_lines` — takes the guard as a locking read (`SELECT … FOR UPDATE`) followed by an explicit state check, rather than a single conditional `UPDATE`, because the parent guard and the child rewrite cannot share one statement.
+The invariant is unchanged: the row is mutated only while it is still `PENDING`, and no concurrent transition can slip between the check and the write.
+
+**Entity scoping.**
+Every order endpoint is scoped to one sales entity, taken from a required `X-Entity-Id` request header, and every query carries `entity_id` alongside the order id.
+An order belonging to another entity is reported as `404`, not `403`: a distinguishable `403` would confirm that the id exists, leaking the existence of another entity's records through an access-control response.
+
 **Invariant: only the `PENDING → CONFIRMED` cell writes an `OrderConfirmed` outbox row.**
 Every other `confirm` cell is read-only (200 no-op, 404, or 409), so no order can emit a second `OrderConfirmed` — the contract-level half of the duplicate-confirm guard whose write-path half is the conditional `UPDATE` of §5.7.
 A `CONFIRMED`+ order is immutable because its lines are now a published contract (`OrderConfirmed`); mutation is refused to keep the event and the row in agreement.
@@ -340,6 +347,7 @@ Inventory-worker treats it as a deterministic error and sends the event straight
 | Endpoint | Success | Client errors |
 |---|---|---|
 | `POST /orders` | 201 created / 200 idempotent replay (§4.4) | 422 (empty or duplicate lines, over the line cap, idempotency key reused with a different body) |
+| `GET /orders` | 200 (order summaries, newest first; filters: status, customer; limit/offset paging) | 422 (paging parameters out of range) |
 | `GET /orders/{id}` | 200 (status, lines, reservation summary) | 404 |
 | `POST /orders/{id}/confirm` | 200 (current status) | 404 |
 | `PATCH`/`PUT /orders/{id}` | 200 | 404 · 409 (not PENDING) · 422 |
@@ -703,7 +711,7 @@ See the **Schema footprint** column below.
 |---|---|---|
 | Purchasing (buy side) | Existed in the source domain, but v0.5 focuses on the event-driven sell-side flow; purchasing adds entities without adding new architectural lessons | None |
 | Shipment & billing | Downstream stages; event names are reserved so the status model can grow (§4.5) | None (new tables when built) |
-| Multi-entity **functional layer** (data isolation, per-entity numbering, API scoping) | The `entity_id` column and envelope field are baked in from day one (retrofitting would touch every table and event); the functional layer is deferred work and the designated **first de-scoping candidate**. Baking in the column keeps that decision reversible | `entity_id` on all tables and the envelope; `order_number` exists but uses a plain sequence, not a per-entity scheme |
+| Multi-entity **functional layer** (data isolation, per-entity numbering) | The `entity_id` column and envelope field are baked in from day one (retrofitting would touch every table and event); the functional layer is deferred work and the designated **first de-scoping candidate**. Baking in the column keeps that decision reversible | `entity_id` on all tables and the envelope; `order_number` exists but uses a plain sequence, not a per-entity scheme; order-API requests are scoped by `X-Entity-Id` (§4.6) |
 | Multi-currency support (FX conversion, multi-currency reporting) | v0.5 seeds a single currency; full support belongs with a separate portfolio project's multi-currency work and is out of scope here | `orders.currency` (single seeded value, no conversion logic) |
 | Order splitting / backorder | The realistic business follow-up to a failed reservation; deferred because partial fulfillment multiplies Saga states. `InventoryReservationFailed` already carries requested-vs-available, so the capability can be added without changing events | None |
 | Per-line delivery dates (split delivery) | Requirement not confirmed in the source domain; a header-level date is enough for v0.5 | None |

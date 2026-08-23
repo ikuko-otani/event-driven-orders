@@ -17,7 +17,7 @@ from order_api.models import Customer, Item, Order, OrderLine, SalesEntity
 from order_api.services.orders import next_order_number
 
 
-async def create_sales_entity(
+async def make_sales_entity(
     session: AsyncSession,
     *,
     code: str = "ENT-01",
@@ -29,7 +29,7 @@ async def create_sales_entity(
     return entity
 
 
-async def create_customer(
+async def make_customer(
     session: AsyncSession,
     *,
     entity: SalesEntity,
@@ -42,7 +42,7 @@ async def create_customer(
     return customer
 
 
-async def create_item(
+async def make_item(
     session: AsyncSession,
     *,
     code: str = "ITEM-01",
@@ -55,7 +55,7 @@ async def create_item(
     return item
 
 
-async def create_inventory(
+async def make_inventory(
     session: AsyncSession,
     *,
     entity: SalesEntity,
@@ -68,7 +68,7 @@ async def create_inventory(
     return inventory
 
 
-async def create_order(
+async def make_order(
     session: AsyncSession,
     *,
     entity: SalesEntity,

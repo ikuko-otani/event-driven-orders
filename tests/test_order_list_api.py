@@ -1,7 +1,7 @@
 """HTTP-level tests for GET /orders: entity scoping, filters, ordering, paging."""
 
 import pytest
-from factories import create_customer, create_item, create_order, create_sales_entity
+from factories import make_customer, make_item, make_order, make_sales_entity
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,9 +9,9 @@ from order_api.models import Customer, Item, SalesEntity
 
 
 async def _seed_masters(session: AsyncSession) -> tuple[SalesEntity, Customer, Item]:
-    entity = await create_sales_entity(session)
-    customer = await create_customer(session, entity=entity)
-    item = await create_item(session)
+    entity = await make_sales_entity(session)
+    customer = await make_customer(session, entity=entity)
+    item = await make_item(session)
     return entity, customer, item
 
 
@@ -20,10 +20,10 @@ async def test_order_list_returns_only_the_callers_entity(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
     owner, customer, item = await _seed_masters(db_session)
-    other = await create_sales_entity(db_session, code="ENT-02", name="Another Co.")
-    other_customer = await create_customer(db_session, entity=other)
-    mine = await create_order(db_session, entity=owner, customer=customer, lines=[(item, 1)])
-    await create_order(db_session, entity=other, customer=other_customer, lines=[(item, 1)])
+    other = await make_sales_entity(db_session, code="ENT-02", name="Another Co.")
+    other_customer = await make_customer(db_session, entity=other)
+    mine = await make_order(db_session, entity=owner, customer=customer, lines=[(item, 1)])
+    await make_order(db_session, entity=other, customer=other_customer, lines=[(item, 1)])
     await db_session.commit()
 
     response = await api_client.get("/orders", headers={"X-Entity-Id": str(owner.id)})
@@ -37,8 +37,8 @@ async def test_order_list_filters_by_status(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
     entity, customer, item = await _seed_masters(db_session)
-    pending = await create_order(db_session, entity=entity, customer=customer, lines=[(item, 1)])
-    await create_order(
+    pending = await make_order(db_session, entity=entity, customer=customer, lines=[(item, 1)])
+    await make_order(
         db_session,
         entity=entity,
         customer=customer,
@@ -59,11 +59,9 @@ async def test_order_list_filters_by_customer(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
     entity, customer, item = await _seed_masters(db_session)
-    other_customer = await create_customer(db_session, entity=entity, code="CUST-02")
-    theirs = await create_order(
-        db_session, entity=entity, customer=other_customer, lines=[(item, 1)]
-    )
-    await create_order(db_session, entity=entity, customer=customer, lines=[(item, 1)])
+    other_customer = await make_customer(db_session, entity=entity, code="CUST-02")
+    theirs = await make_order(db_session, entity=entity, customer=other_customer, lines=[(item, 1)])
+    await make_order(db_session, entity=entity, customer=customer, lines=[(item, 1)])
     await db_session.commit()
 
     response = await api_client.get(
@@ -81,7 +79,7 @@ async def test_order_list_is_newest_first_and_paginated(
 ) -> None:
     entity, customer, item = await _seed_masters(db_session)
     orders = [
-        await create_order(db_session, entity=entity, customer=customer, lines=[(item, 1)])
+        await make_order(db_session, entity=entity, customer=customer, lines=[(item, 1)])
         for _ in range(3)
     ]
     await db_session.commit()
@@ -98,7 +96,7 @@ async def test_order_list_is_newest_first_and_paginated(
 async def test_order_list_rejects_a_limit_above_the_maximum(
     db_session: AsyncSession, api_client: AsyncClient
 ) -> None:
-    entity = await create_sales_entity(db_session)
+    entity = await make_sales_entity(db_session)
     await db_session.commit()
 
     response = await api_client.get(
