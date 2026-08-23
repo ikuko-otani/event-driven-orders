@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from order_api.models import Customer, Item, Order, OrderLine
-from order_api.schemas.orders import OrderCreate
+from order_api.schemas.orders import OrderCreate, OrderLineCreate
 
 IDEMPOTENCY_KEY_CONSTRAINT = "uq_orders_entity_id_idempotency_key"
 
@@ -72,6 +72,25 @@ async def list_orders(
     return result.scalars().all()
 
 
+async def _resolve_line_items(
+    session: AsyncSession, lines: Sequence[OrderLineCreate]
+) -> dict[uuid.UUID, Item]:
+    """Validate the requested lines and return the items they name, keyed by id."""
+    duplicates = [
+        item_id for item_id, count in Counter(line.item_id for line in lines).items() if count > 1
+    ]
+    if duplicates:
+        raise HTTPException(422, detail=f"duplicate item_id in lines: {duplicates}")
+
+    item_ids = [line.item_id for line in lines]
+    result = await session.execute(select(Item).where(Item.id.in_(item_ids)))
+    items_by_id = {item.id: item for item in result.scalars()}
+    missing = set(item_ids) - items_by_id.keys()
+    if missing:
+        raise HTTPException(422, detail=f"item_id not found: {missing}")
+    return items_by_id
+
+
 async def create_order(
     session: AsyncSession,
     *,
@@ -79,22 +98,11 @@ async def create_order(
     idempotency_key: str,
     body: OrderCreate,
 ) -> tuple[Order, bool]:
-    duplicate_items = [
-        item for item, count in Counter(line.item_id for line in body.lines).items() if count > 1
-    ]
-    if duplicate_items:
-        raise HTTPException(422, detail=f"duplicate item_id in lines: {duplicate_items}")
-
     customer = await session.get(Customer, body.customer_id)
     if customer is None or customer.entity_id != entity_id:
         raise HTTPException(422, detail="customer_id does not exist for this entity")
 
-    item_ids = [line.item_id for line in body.lines]
-    items_result = await session.execute(select(Item).where(Item.id.in_(item_ids)))
-    items_by_id = {item.id: item for item in items_result.scalars()}
-    missing = set(item_ids) - items_by_id.keys()
-    if missing:
-        raise HTTPException(422, detail=f"item_id not found: {missing}")
+    items_by_id = await _resolve_line_items(session, body.lines)
 
     order_number = await next_order_number(session)
     request_fingerprint = fingerprint(body)
