@@ -6,11 +6,12 @@ from collections import Counter
 from collections.abc import Sequence
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from order_api.events import order_confirmed_outbox
 from order_api.models import Customer, Item, Order, OrderLine
 from order_api.schemas.orders import OrderCreate, OrderLineCreate, OrderUpdate
 
@@ -184,4 +185,33 @@ async def update_order(
             for line in body.lines
         ]
         await session.flush()
+    return order
+
+
+async def confirm_order(
+    session: AsyncSession, *, entity_id: uuid.UUID, order_id: uuid.UUID
+) -> Order:
+    """Take the PENDING → CONFIRMED transition, emitting OrderConfirmed exactly once.
+
+    The transition is one conditional UPDATE, never a read-then-write: two
+    concurrent confirms would both observe PENDING and write two outbox rows
+    carrying distinct event_ids, the one duplicate processed_events cannot
+    absorb (design §5.7).
+    """
+    result = await session.execute(
+        update(Order)
+        .where(
+            Order.id == order_id,
+            Order.entity_id == entity_id,
+            Order.status == "PENDING",
+        )
+        .values(status="CONFIRMED")
+        .returning(Order.id)
+        .execution_options(synchronize_session=False)
+    )
+    transitioned = result.scalar_one_or_none() is not None
+
+    order = await get_order(session, entity_id=entity_id, order_id=order_id)
+    if transitioned:
+        session.add(order_confirmed_outbox(order))
     return order
