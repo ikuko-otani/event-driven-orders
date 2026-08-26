@@ -1,5 +1,7 @@
 """HTTP-level tests for POST /orders/{order_id}/confirm: the transition and its outbox row."""
 
+from uuid import uuid4
+
 import pytest
 from factories import make_customer, make_item, make_order, make_sales_entity
 from httpx import AsyncClient
@@ -81,4 +83,38 @@ async def test_confirming_a_non_pending_order_is_a_read_only_no_op(
     assert response.json()["status"] == status
     reread = await api_client.get(f"/orders/{order.id}", headers=headers)
     assert reread.json()["status"] == status
+    assert await _outbox_rows(db_session, order) == []
+
+
+@pytest.mark.asyncio
+async def test_confirming_an_absent_order_is_404(
+    db_session: AsyncSession, api_client: AsyncClient
+) -> None:
+    entity, _, _ = await _seed_masters(db_session)
+    await db_session.commit()
+
+    response = await api_client.post(
+        f"/orders/{uuid4()}/confirm", headers={"X-Entity-Id": str(entity.id)}
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_confirming_another_entitys_order_is_404_and_leaves_it_untouched(
+    db_session: AsyncSession, api_client: AsyncClient
+) -> None:
+    """A 403 would confirm the id exists; the order must also survive the attempt unchanged."""
+    entity, customer, item = await _seed_masters(db_session)
+    order = await make_order(db_session, entity=entity, customer=customer, lines=[(item, 1)])
+    other = await make_sales_entity(db_session, code="ENT-02", name="Other Trading Co.")
+    await db_session.commit()
+
+    response = await api_client.post(
+        f"/orders/{order.id}/confirm", headers={"X-Entity-Id": str(other.id)}
+    )
+
+    assert response.status_code == 404
+    reread = await api_client.get(f"/orders/{order.id}", headers={"X-Entity-Id": str(entity.id)})
+    assert reread.json()["status"] == "PENDING"
     assert await _outbox_rows(db_session, order) == []
