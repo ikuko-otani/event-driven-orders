@@ -60,3 +60,25 @@ async def test_confirming_twice_does_not_write_a_second_outbox_row(
     assert second.status_code == 200
     assert second.json()["status"] == "CONFIRMED"
     assert len(await _outbox_rows(db_session, order)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["CONFIRMED", "RESERVED", "RESERVATION_FAILED"])
+async def test_confirming_a_non_pending_order_is_a_read_only_no_op(
+    db_session: AsyncSession, api_client: AsyncClient, status: str
+) -> None:
+    """Every cell but PENDING answers 200, writes no outbox row, and changes nothing."""
+    entity, customer, item = await _seed_masters(db_session)
+    order = await make_order(
+        db_session, entity=entity, customer=customer, lines=[(item, 2)], status=status
+    )
+    await db_session.commit()
+    headers = {"X-Entity-Id": str(entity.id)}
+
+    response = await api_client.post(f"/orders/{order.id}/confirm", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == status
+    reread = await api_client.get(f"/orders/{order.id}", headers=headers)
+    assert reread.json()["status"] == status
+    assert await _outbox_rows(db_session, order) == []
