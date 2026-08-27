@@ -15,13 +15,14 @@ from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import Session
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
 
@@ -142,3 +143,16 @@ async def api_client(
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             yield client
+
+
+@pytest.fixture
+def sync_session(migrated_database: str) -> Generator[Session, None, None]:
+    """A synchronous Session, because the poller is a synchronous process.
+
+    It reaches the same container over its own connection, exactly as the
+    poller reaches the database in production — never sharing the app's.
+    """
+    engine = create_engine(DatabaseSettings().sync_url)
+    with Session(engine) as session:
+        yield session
+    engine.dispose()
