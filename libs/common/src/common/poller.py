@@ -46,14 +46,21 @@ class PollerConfig:
     batch_size: int = 100
     poll_interval: float = 0.1
     flush_timeout: float = 10.0
+    max_attempts: int = 5
 
 
-def _on_delivery(row_id: uuid.UUID, acked: list[uuid.UUID]) -> DeliveryCallback:
+def _on_delivery(
+    row_id: uuid.UUID,
+    acked: list[uuid.UUID],
+    failed: list[tuple[uuid.UUID, DeliveryError]],
+) -> DeliveryCallback:
     """Bind one row's id to its callback; the broker reports each send separately."""
 
     def callback(error: DeliveryError | None, _message: Any) -> None:
         if error is None:
             acked.append(row_id)
+        else:
+            failed.append((row_id, error))
 
     return callback
 
@@ -77,12 +84,13 @@ def publish_batch(
     )
 
     acked: list[uuid.UUID] = []
+    failed: list[tuple[uuid.UUID, DeliveryError]] = []
     for row in rows:
         producer.produce(
             config.topic,
             key=str(row.aggregate_id),
             value=json.dumps(envelope(row)).encode(),
-            on_delivery=_on_delivery(row.id, acked),
+            on_delivery=_on_delivery(row.id, acked, failed),
         )
     producer.flush(config.flush_timeout)
 
