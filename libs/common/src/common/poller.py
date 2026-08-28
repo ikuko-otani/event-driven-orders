@@ -7,6 +7,7 @@ loop would buy nothing.
 """
 
 import json
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -66,7 +67,11 @@ def _on_delivery(
 
 
 def publish_batch(
-    session: Session, *, outbox: type[OutboxMixin], producer: Producer, config: PollerConfig
+    session: Session,
+    *,
+    outbox: type[OutboxMixin],
+    producer: Producer,
+    config: PollerConfig,
 ) -> int:
     """Publish one batch of unpublished rows, then mark only the ones acked.
 
@@ -115,3 +120,23 @@ def publish_batch(
         )
     session.commit()
     return len(rows)
+
+
+def run_forever(
+    session_factory: Callable[[], Session],
+    *,
+    outbox: type[OutboxMixin],
+    producer: Producer,
+    config: PollerConfig,
+) -> None:
+    """Drain the outbox forever, sleeping only when the last batch ran short.
+
+    A full batch means a backlog is still draining, so the next cycle starts
+    at once; a short one means the table is caught up, and polling harder
+    would only add load without lowering latency.
+    """
+    while True:
+        with session_factory() as session:
+            selected = publish_batch(session, outbox=outbox, producer=producer, config=config)
+        if selected < config.batch_size:
+            time.sleep(config.poll_interval)
