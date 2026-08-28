@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
 from common.envelope import envelope
@@ -96,5 +96,22 @@ def publish_batch(
 
     if acked:
         session.execute(update(outbox).where(outbox.id.in_(acked)).values(published_at=func.now()))
+    if failed:
+        permanent = [row_id for row_id, error in failed if not error.retriable()]
+        session.execute(
+            update(outbox)
+            .where(outbox.id.in_([row_id for row_id, _ in failed]))
+            .values(
+                publish_attempts=outbox.publish_attempts + 1,
+                quarantined_at=case(
+                    (
+                        outbox.id.in_(permanent)
+                        | (outbox.publish_attempts + 1 >= config.max_attempts),
+                        func.now(),
+                    ),
+                    else_=None,
+                ),
+            )
+        )
     session.commit()
     return len(rows)
