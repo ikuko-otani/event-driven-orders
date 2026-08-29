@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Shared configuration and event-envelope helpers"
 requires-python = ">=3.12"
 dependencies = [
+    "confluent-kafka>=2.5",
     "pydantic-settings>=2.5",
     "sqlalchemy>=2.0",
 ]
