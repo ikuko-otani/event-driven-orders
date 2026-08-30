@@ -127,3 +127,16 @@ async def test_a_transient_failure_at_the_attempt_limit_is_quarantined(
     row = sync_session.scalars(select(Outbox)).one()
     assert row.publish_attempts == 1
     assert row.quarantined_at is not None
+
+
+@pytest.mark.asyncio
+async def test_publish_batch_flushes_until_the_client_queue_is_empty(
+    db_session: AsyncSession, sync_session: Session
+) -> None:
+    await _seed_confirmed_order(db_session)
+    slow = FakeProducer(flushes_needed=2)
+
+    publish_batch(sync_session, outbox=Outbox, producer=slow, config=CONFIG)
+
+    assert slow.flush_calls == 2
+    assert sync_session.scalars(select(Outbox)).one().published_at is not None
