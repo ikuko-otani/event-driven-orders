@@ -25,8 +25,9 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import Session
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
+from testcontainers.community.kafka import RedpandaContainer
 
-from common.settings import DatabaseSettings, RedisSettings
+from common.settings import DatabaseSettings, KafkaSettings, RedisSettings
 from order_api.main import app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -79,6 +80,20 @@ def configured_redis(redis_container: RedisContainer) -> str:
     os.environ["REDIS_HOST"] = redis_container.get_container_host_ip()
     os.environ["REDIS_PORT"] = str(redis_container.get_exposed_port(redis_container.port))
     return RedisSettings().url
+
+
+@pytest.fixture(scope="session")
+def redpanda_container() -> Generator[RedpandaContainer, None, None]:
+    """One Redpanda broker for the whole test session, on the image compose runs."""
+    with RedpandaContainer("redpandadata/redpanda:v26.1.14") as redpanda:
+        yield redpanda
+
+
+@pytest.fixture(scope="session")
+def configured_kafka(redpanda_container: RedpandaContainer) -> str:
+    """Point KAFKA_* at the container, the same way migrated_database points DB_*."""
+    os.environ["KAFKA_BOOTSTRAP_SERVERS"] = redpanda_container.get_bootstrap_server()
+    return KafkaSettings().bootstrap_servers
 
 
 @pytest_asyncio.fixture
