@@ -23,9 +23,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import Session
+from testcontainers.community.kafka import RedpandaContainer
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
-from testcontainers.community.kafka import RedpandaContainer
 
 from common.settings import DatabaseSettings, KafkaSettings, RedisSettings
 from order_api.main import app
