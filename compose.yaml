@@ -86,6 +86,7 @@ services:
       dockerfile: services/order-api/Dockerfile
     environment:
       DB_HOST: postgres
+      REDIS_HOST: redis
     ports:
       - "8000:8000"
     depends_on:
