@@ -1,7 +1,7 @@
 # Domain Design — event-driven-orders
 
-> **Version**: 0.4.4 (draft) — 2026-08-23
-> **Status**: ER diagram and event catalog (v0.2); Saga reliability details — outbox poller, retry/DLQ, edge cases — and scale assumptions (v0.3); pre-implementation review fixes — concurrency-safe state transitions, idempotency authority, envelope/outbox mapping, reservation granularity, producer-side poison, and the API state×operation contract (v0.4); editorial pass — authentication recorded in §7, cross-references made self-contained (v0.4.1, no design change). Customer master given a human-facing business key, unique per entity (v0.4.2). HTTP idempotency now rejects a key reused with a different request body — `orders.request_fingerprint` plus a 422 on mismatch — instead of silently replaying regardless of payload (v0.4.3). The order API's read surface and its entity scoping are now recorded: `GET /orders` added to the error catalog, order endpoints scoped by a required `X-Entity-Id` header with cross-entity access reported as 404, and the state guard for an update that also rewrites child rows stated as a locking read (v0.4.4).
+> **Version**: 0.4.5 (draft) — 2026-08-28
+> **Status**: ER diagram and event catalog (v0.2); Saga reliability details — outbox poller, retry/DLQ, edge cases — and scale assumptions (v0.3); pre-implementation review fixes — concurrency-safe state transitions, idempotency authority, envelope/outbox mapping, reservation granularity, producer-side poison, and the API state×operation contract (v0.4); editorial pass — authentication recorded in §7, cross-references made self-contained (v0.4.1, no design change). Customer master given a human-facing business key, unique per entity (v0.4.2). HTTP idempotency now rejects a key reused with a different request body — `orders.request_fingerprint` plus a 422 on mismatch — instead of silently replaying regardless of payload (v0.4.3). The order API's read surface and its entity scoping are now recorded: `GET /orders` added to the error catalog, order endpoints scoped by a required `X-Entity-Id` header with cross-entity access reported as 404, and the state guard for an update that also rewrites child rows stated as a locking read (v0.4.4). The poller's failure-path update is stated as a single set-based statement rather than a per-row loop, matching the successful-publish update beside it (v0.4.5, no behavioural change).
 > Broker selection is settled in ADR-001 (Kafka) and ADR-002 (custom outbox poller).
 
 ---
@@ -422,12 +422,11 @@ loop forever:
     flush()                             -- wait for broker acks; per-row errors arrive in delivery callbacks, never crash the loop
     UPDATE outbox SET published_at = now()
         WHERE id IN (:acked_ids)        -- successes only, one statement
-    for id in :failed_ids:              -- sends the broker rejected
-        UPDATE outbox
-           SET publish_attempts = publish_attempts + 1,
-               quarantined_at = CASE WHEN <permanent error> OR publish_attempts + 1 >= :max_attempts
-                                     THEN now() ELSE NULL END
-         WHERE id = :id                 -- transient: retried next cycle; poison: quarantined + alert
+    UPDATE outbox                       -- sends the broker rejected, one statement
+       SET publish_attempts = publish_attempts + 1,
+           quarantined_at = CASE WHEN id IN (:permanent_ids) OR publish_attempts + 1 >= :max_attempts
+                                 THEN now() ELSE NULL END
+     WHERE id IN (:failed_ids)          -- transient: retried next cycle; poison: quarantined + alert
     if len(rows) < batch_size:
         sleep(:poll_interval)           -- 100 ms; skip sleep while draining backlog
 ```

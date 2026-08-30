@@ -6,6 +6,7 @@ verify, and they are what this schema's correctness rests on.
 """
 
 import os
+import uuid
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 
@@ -13,19 +14,27 @@ import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
+from confluent_kafka import Consumer
+
+# NewTopic is re-exported without a declaration upstream, so mypy cannot see it
+# as part of confluent_kafka.admin's public surface; the path itself is the
+# documented one.
+from confluent_kafka.admin import AdminClient, NewTopic  # type: ignore[attr-defined]
 from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import Session
+from testcontainers.community.kafka import RedpandaContainer
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
 
-from common.settings import DatabaseSettings, RedisSettings
+from common.settings import DatabaseSettings, KafkaSettings, RedisSettings
 from order_api.main import app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -78,6 +87,57 @@ def configured_redis(redis_container: RedisContainer) -> str:
     os.environ["REDIS_HOST"] = redis_container.get_container_host_ip()
     os.environ["REDIS_PORT"] = str(redis_container.get_exposed_port(redis_container.port))
     return RedisSettings().url
+
+
+@pytest.fixture(scope="session")
+def redpanda_container() -> Generator[RedpandaContainer, None, None]:
+    """One Redpanda broker for the whole test session, on the image compose runs."""
+    with RedpandaContainer("redpandadata/redpanda:v26.1.14") as redpanda:
+        yield redpanda
+
+
+@pytest.fixture(scope="session")
+def configured_kafka(redpanda_container: RedpandaContainer) -> str:
+    """Point KAFKA_* at the container, the same way migrated_database points DB_*."""
+    os.environ["KAFKA_BOOTSTRAP_SERVERS"] = redpanda_container.get_bootstrap_server()
+    return KafkaSettings().bootstrap_servers
+
+
+@pytest.fixture
+def kafka_topic(configured_kafka: str) -> Generator[str, None, None]:
+    """A topic of this test's own, created explicitly and deleted afterwards.
+
+    Auto-creation is off (design §6.2), so a topic nobody creates is a send
+    that fails — never a 1-partition topic appearing silently. A topic shared
+    between tests would also let one test's leftovers answer the next test's
+    "was anything published?".
+    """
+    admin = AdminClient({"bootstrap.servers": configured_kafka})
+    topic = f"orders.events.{uuid.uuid4()}"
+    for future in admin.create_topics([NewTopic(topic, num_partitions=1)]).values():
+        future.result()
+    yield topic
+    for future in admin.delete_topics([topic]).values():
+        future.result()
+
+
+@pytest.fixture
+def kafka_consumer(configured_kafka: str) -> Generator[Consumer, None, None]:
+    """A consumer in a group of its own, reading its topic from the beginning.
+
+    The group id is where Kafka remembers how far a consumer has read, and
+    earliest is what keeps a message published before the subscription
+    visible — which is the order every test here runs in (§7.3).
+    """
+    consumer = Consumer(
+        {
+            "bootstrap.servers": configured_kafka,
+            "group.id": f"test-{uuid.uuid4()}",
+            "auto.offset.reset": "earliest",
+        }
+    )
+    yield consumer
+    consumer.close()
 
 
 @pytest_asyncio.fixture
@@ -142,3 +202,16 @@ async def api_client(
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             yield client
+
+
+@pytest.fixture
+def sync_session(migrated_database: str) -> Generator[Session, None, None]:
+    """A synchronous Session, because the poller is a synchronous process.
+
+    It reaches the same container over its own connection, exactly as the
+    poller reaches the database in production — never sharing the app's.
+    """
+    engine = create_engine(DatabaseSettings().sync_url)
+    with Session(engine) as session:
+        yield session
+    engine.dispose()

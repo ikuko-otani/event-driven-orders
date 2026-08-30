@@ -49,6 +49,27 @@ services:
       timeout: 5s
       retries: 10
 
+  redpanda-init:
+    image: redpandadata/redpanda:v26.1.14
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    # Topics are created here with the partition count design §6.2 fixes.
+    # Auto-creation would make a 1-partition topic instead, and raising the
+    # count later changes the key -> partition mapping, which breaks the
+    # per-order ordering of §4.2. --if-not-exists keeps a repeated `up`
+    # from failing and blocking the poller that waits on this.
+    entrypoint:
+      - rpk
+      - topic
+      - create
+      - orders.events
+      - -p
+      - "12"
+      - --if-not-exists
+      - -X
+      - brokers=redpanda:9092
+
   redis:
     image: redis:8.10.1-alpine
     ports:
@@ -65,6 +86,7 @@ services:
       dockerfile: services/order-api/Dockerfile
     environment:
       DB_HOST: postgres
+      REDIS_HOST: redis
     ports:
       - "8000:8000"
     depends_on:
@@ -85,6 +107,31 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+
+  order-api-poller:
+    build:
+      context: .
+      dockerfile: services/order-api/Dockerfile
+    # The same image as `api`, running a different process: the poller is a
+    # process of its own by design (§5.4) and a strict singleton. Never add
+    # `replicas` here — two pollers publish one order's events out of order.
+    command:
+      - uv
+      - run
+      - --no-sync
+      - --package
+      - order-api
+      - python
+      - -m
+      - order_api.poller
+    environment:
+      DB_HOST: postgres
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
 
   inventory-worker:
     build:

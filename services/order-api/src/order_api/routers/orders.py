@@ -13,6 +13,7 @@ from order_api.db import get_session
 from order_api.models import Order
 from order_api.schemas.orders import OrderCreate, OrderRead, OrderSummary, OrderUpdate
 from order_api.services.orders import (
+    confirm_order,
     create_order,
     fingerprint,
     get_order,
@@ -98,3 +99,13 @@ async def patch_order(
     session: AsyncSession = Depends(get_session),
 ) -> Order:
     return await update_order(session, entity_id=x_entity_id, order_id=order_id, body=body)
+
+
+@router.post("/{order_id}/confirm", response_model=OrderRead)
+async def post_order_confirm(
+    order_id: uuid.UUID,
+    x_entity_id: uuid.UUID = Header(...),
+    session: AsyncSession = Depends(get_session),
+) -> Order:
+    """200 on the transition and on every replay alike; the state is the response (design §4.6)."""
+    return await confirm_order(session, entity_id=x_entity_id, order_id=order_id)

@@ -40,3 +40,17 @@ class RedisSettings(BaseSettings):
     @property
     def url(self) -> str:
         return f"redis://{self.host}:{self.port}/0"
+
+
+class KafkaSettings(BaseSettings):
+    """Producer connection settings; the poller's delivery guarantee rests on them (design §5.4).
+
+    message_timeout_ms bounds how long one send may stay unresolved: after it,
+    the client reports the message as failed instead of retrying forever, which
+    is what lets the poller's own attempt counting make progress at all.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="KAFKA_")
+
+    bootstrap_servers: str = "localhost:19092"
+    message_timeout_ms: int = 300_000
