@@ -6,6 +6,7 @@ verify, and they are what this schema's correctness rests on.
 """
 
 import os
+import uuid
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 
@@ -13,6 +14,11 @@ import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
+
+# NewTopic is re-exported without a declaration upstream, so mypy cannot see it
+# as part of confluent_kafka.admin's public surface; the path itself is the
+# documented one.
+from confluent_kafka.admin import AdminClient, NewTopic  # type: ignore[attr-defined]
 from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis
 from sqlalchemy import create_engine, text
@@ -94,6 +100,24 @@ def configured_kafka(redpanda_container: RedpandaContainer) -> str:
     """Point KAFKA_* at the container, the same way migrated_database points DB_*."""
     os.environ["KAFKA_BOOTSTRAP_SERVERS"] = redpanda_container.get_bootstrap_server()
     return KafkaSettings().bootstrap_servers
+
+
+@pytest.fixture
+def kafka_topic(configured_kafka: str) -> Generator[str, None, None]:
+    """A topic of this test's own, created explicitly and deleted afterwards.
+
+    Auto-creation is off (design §6.2), so a topic nobody creates is a send
+    that fails — never a 1-partition topic appearing silently. A topic shared
+    between tests would also let one test's leftovers answer the next test's
+    "was anything published?".
+    """
+    admin = AdminClient({"bootstrap.servers": configured_kafka})
+    topic = f"orders.events.{uuid.uuid4()}"
+    for future in admin.create_topics([NewTopic(topic, num_partitions=1)]).values():
+        future.result()
+    yield topic
+    for future in admin.delete_topics([topic]).values():
+        future.result()
 
 
 @pytest_asyncio.fixture
