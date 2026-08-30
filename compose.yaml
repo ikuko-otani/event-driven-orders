@@ -49,6 +49,27 @@ services:
       timeout: 5s
       retries: 10
 
+  redpanda-init:
+    image: redpandadata/redpanda:v26.1.14
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    # Topics are created here with the partition count design §6.2 fixes.
+    # Auto-creation would make a 1-partition topic instead, and raising the
+    # count later changes the key -> partition mapping, which breaks the
+    # per-order ordering of §4.2. --if-not-exists keeps a repeated `up`
+    # from failing and blocking the poller that waits on this.
+    entrypoint:
+      - rpk
+      - topic
+      - create
+      - orders.events
+      - -p
+      - "12"
+      - --if-not-exists
+      - -X
+      - brokers=redpanda:9092
+
   redis:
     image: redis:8.10.1-alpine
     ports:
