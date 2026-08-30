@@ -97,7 +97,9 @@ def publish_batch(
             value=json.dumps(envelope(row)).encode(),
             on_delivery=_on_delivery(row.id, acked, failed),
         )
-    producer.flush(config.flush_timeout)
+    while producer.flush(config.flush_timeout) > 0:
+        # Every message resolves within message.timeout.ms, so this ends.
+        continue
 
     if acked:
         session.execute(update(outbox).where(outbox.id.in_(acked)).values(published_at=func.now()))
