@@ -107,6 +107,31 @@ services:
       timeout: 3s
       retries: 10
 
+  order-api-poller:
+    build:
+      context: .
+      dockerfile: services/order-api/Dockerfile
+    # The same image as `api`, running a different process: the poller is a
+    # process of its own by design (§5.4) and a strict singleton. Never add
+    # `replicas` here — two pollers publish one order's events out of order.
+    command:
+      - uv
+      - run
+      - --no-sync
+      - --package
+      - order-api
+      - python
+      - -m
+      - order_api.poller
+    environment:
+      DB_HOST: postgres
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+
   inventory-worker:
     build:
       context: .
