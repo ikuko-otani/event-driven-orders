@@ -24,9 +24,16 @@ class FakeProducer:
     rejected; every other one is acked.
     """
 
-    def __init__(self, errors: dict[str, FakeDeliveryError] | None = None) -> None:
+    def __init__(
+        self,
+        errors: dict[str, FakeDeliveryError] | None = None,
+        *,
+        flushes_needed: int = 1,
+    ) -> None:
         self.errors: dict[str, FakeDeliveryError] = errors or {}
         self.messages: list[tuple[str, str, bytes]] = []
+        self.flush_calls = 0
+        self._flushes_needed = flushes_needed
         self._pending: list[tuple[str, DeliveryCallback]] = []
 
     def produce(self, topic: str, *, key: str, value: bytes, on_delivery: DeliveryCallback) -> None:
@@ -34,6 +41,10 @@ class FakeProducer:
         self._pending.append((key, on_delivery))
 
     def flush(self, timeout: float) -> int:
+        """Report what is still queued; only the last flush resolves the sends."""
+        self.flush_calls += 1
+        if self.flush_calls < self._flushes_needed:
+            return len(self._pending)
         for key, callback in self._pending:
             callback(self.errors.get(key), None)
         self._pending.clear()
