@@ -14,6 +14,7 @@ import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
+from confluent_kafka import Consumer
 
 # NewTopic is re-exported without a declaration upstream, so mypy cannot see it
 # as part of confluent_kafka.admin's public surface; the path itself is the
@@ -118,6 +119,25 @@ def kafka_topic(configured_kafka: str) -> Generator[str, None, None]:
     yield topic
     for future in admin.delete_topics([topic]).values():
         future.result()
+
+
+@pytest.fixture
+def kafka_consumer(configured_kafka: str) -> Generator[Consumer, None, None]:
+    """A consumer in a group of its own, reading its topic from the beginning.
+
+    The group id is where Kafka remembers how far a consumer has read, and
+    earliest is what keeps a message published before the subscription
+    visible — which is the order every test here runs in (§7.3).
+    """
+    consumer = Consumer(
+        {
+            "bootstrap.servers": configured_kafka,
+            "group.id": f"test-{uuid.uuid4()}",
+            "auto.offset.reset": "earliest",
+        }
+    )
+    yield consumer
+    consumer.close()
 
 
 @pytest_asyncio.fixture
