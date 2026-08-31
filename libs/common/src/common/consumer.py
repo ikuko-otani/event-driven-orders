@@ -6,11 +6,16 @@ its handler instead of importing any of them. Nothing here is async on
 purpose — the Kafka consumer blocks, exactly as the producer does.
 """
 
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
+
+from common.messaging import ProcessedEventMixin
 
 
 class Message(Protocol):
@@ -39,3 +44,24 @@ class ConsumerConfig:
 
     topic: str
     group_id: str
+
+
+def _claim(
+    session: Session,
+    *,
+    processed_events: type[ProcessedEventMixin],
+    event_id: uuid.UUID,
+    consumer_name: str,
+) -> bool:
+    """Take the event for this consumer, or report that someone already took it.
+
+    ON CONFLICT DO NOTHING makes the check and the claim one statement, so two
+    deliveries racing each other cannot both see "not processed yet" — the
+    same argument the order INSERT uses as its idempotency claim (design §4.4).
+    """
+    result = session.execute(
+        insert(processed_events)
+        .values(event_id=event_id, consumer_name=consumer_name)
+        .on_conflict_do_nothing()
+    )
+    return cast(CursorResult[Any], result).rowcount == 1
