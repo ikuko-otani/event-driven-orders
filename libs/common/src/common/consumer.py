@@ -6,6 +6,7 @@ its handler instead of importing any of them. Nothing here is async on
 purpose — the Kafka consumer blocks, exactly as the producer does.
 """
 
+import json
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -65,3 +66,37 @@ def _claim(
         .on_conflict_do_nothing()
     )
     return cast(CursorResult[Any], result).rowcount == 1
+
+
+def handle_message(
+    message: Message,
+    *,
+    session_factory: Callable[[], Session],
+    consumer: Consumer,
+    processed_events: type[ProcessedEventMixin],
+    handler: Handler,
+    config: ConsumerConfig,
+) -> None:
+    """Process one message at most once, and only then commit its offset.
+
+    The claim and the handler's writes share one transaction, so a crash
+    mid-handler rolls the claim back too and the redelivery is processed
+    normally. Committing the offset first would instead let Kafka consider a
+    message consumed that no transaction ever recorded — at-most-once.
+    """
+    value = message.value()
+    if value is None:
+        raise ValueError("message carries no value")
+    envelope = json.loads(value)
+
+    with session_factory() as session:
+        claimed = _claim(
+            session,
+            processed_events=processed_events,
+            event_id=uuid.UUID(envelope["event_id"]),
+            consumer_name=config.group_id,
+        )
+        if claimed:
+            handler(session, envelope)
+        session.commit()
+    consumer.commit(message, asynchronous=False)
