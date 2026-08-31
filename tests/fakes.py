@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from common.consumer import Message
 from common.poller import DeliveryCallback
 
 
@@ -49,3 +50,27 @@ class FakeProducer:
             callback(self.errors.get(key), None)
         self._pending.clear()
         return 0
+
+
+@dataclass(frozen=True)
+class FakeMessage:
+    """One consumed message, carrying only the bytes the loop reads."""
+
+    body: bytes
+
+    def value(self) -> bytes | None:
+        return self.body
+
+
+class FakeConsumer:
+    """A consumer that records whose offset was committed, and nothing else.
+
+    It cannot fail a commit and it never rebalances; what it does model is the
+    only thing the loop itself decides — whether the offset commit is reached.
+    """
+
+    def __init__(self) -> None:
+        self.committed: list[Message] = []
+
+    def commit(self, message: Message, *, asynchronous: bool) -> None:
+        self.committed.append(message)
