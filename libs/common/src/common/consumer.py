@@ -10,10 +10,9 @@ import json
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from common.messaging import ProcessedEventMixin
@@ -59,13 +58,17 @@ def _claim(
     ON CONFLICT DO NOTHING makes the check and the claim one statement, so two
     deliveries racing each other cannot both see "not processed yet" — the
     same argument the order INSERT uses as its idempotency claim (design §4.4).
+    RETURNING, not rowcount, is what tells success from conflict: this
+    driver/SQLAlchemy combination reports -1 (unknown) for a plain INSERT's
+    rowcount, but a row comes back from RETURNING only when one was inserted.
     """
     result = session.execute(
         insert(processed_events)
         .values(event_id=event_id, consumer_name=consumer_name)
         .on_conflict_do_nothing()
+        .returning(processed_events.event_id)
     )
-    return cast(CursorResult[Any], result).rowcount == 1
+    return result.first() is not None
 
 
 def handle_message(
