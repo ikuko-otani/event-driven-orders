@@ -1,6 +1,7 @@
 """Test doubles for infrastructure the unit tests deliberately do not start."""
 
 from dataclasses import dataclass
+from typing import Literal
 
 from common.consumer import Message
 from common.poller import DeliveryCallback
@@ -87,7 +88,7 @@ class FakeConsumer:
     def poll(self, timeout: float) -> Message | None:
         return self._polls.pop(0) if self._polls else None
 
-    def commit(self, message: Message, *, asynchronous: bool) -> None:
+    def commit(self, *, message: Message, asynchronous: Literal[False]) -> None:
         self.committed.append(message)
 
     def close(self) -> None:

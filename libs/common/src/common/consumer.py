@@ -33,7 +33,7 @@ class Consumer(Protocol):
 
     def poll(self, timeout: float) -> Message | None: ...
 
-    def commit(self, message: Message, *, asynchronous: bool) -> None: ...
+    def commit(self, *, message: Message, asynchronous: Literal[False]) -> object: ...
 
     def close(self) -> None: ...
 
@@ -113,7 +113,7 @@ def handle_message(
         if claimed:
             handler(session, envelope)
         session.commit()
-    consumer.commit(message, asynchronous=False)
+    consumer.commit(message=message, asynchronous=False)
 
 
 def run_forever(
