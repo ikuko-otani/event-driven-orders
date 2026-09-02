@@ -23,11 +23,19 @@ class Message(Protocol):
 
     def value(self) -> bytes | None: ...
 
+    def error(self) -> object | None: ...
+
 
 class Consumer(Protocol):
     """The slice of the Kafka consumer API this loop uses."""
 
+    def subscribe(self, topics: list[str]) -> None: ...
+
+    def poll(self, timeout: float) -> Message | None: ...
+
     def commit(self, message: Message, *, asynchronous: bool) -> None: ...
+
+    def close(self) -> None: ...
 
 
 Handler = Callable[[Session, dict[str, Any]], None]
@@ -40,10 +48,13 @@ class ConsumerConfig:
     group_id doubles as the processed_events consumer_name (design §3.2): the
     dedup ledger keys on the logical consumer, never on the instance, or a
     redelivery to a different instance would not be recognised as a duplicate.
+    poll_timeout is how long one poll waits before reporting that nothing
+    arrived; it costs only idle latency, never a missed message.
     """
 
     topic: str
     group_id: str
+    poll_timeout: float = 1.0
 
 
 def _claim(
