@@ -8,6 +8,7 @@ verify, and they are what this schema's correctness rests on.
 import os
 import uuid
 from collections.abc import AsyncGenerator, Callable, Generator
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -89,11 +90,32 @@ def configured_redis(redis_container: RedisContainer) -> str:
     return RedisSettings().url
 
 
+def _start_redpanda(attempts: int = 3) -> RedpandaContainer:
+    """Start the broker, retrying a start race inside testcontainers itself.
+
+    The module pushes the start script into an already-running container whose
+    shell waits on `[ -f script ]` — existence, not content — so under host load
+    the file can be seen while still empty, run as a no-op, and the container
+    exits 0 with no broker in it. Retrying is the only lever available here.
+    """
+    while True:
+        attempts -= 1
+        container = RedpandaContainer("redpandadata/redpanda:v26.1.14")
+        try:
+            return container.start(timeout=30)
+        except RuntimeError:
+            with suppress(Exception):
+                container.stop()
+            if attempts == 0:
+                raise
+
+
 @pytest.fixture(scope="session")
 def redpanda_container() -> Generator[RedpandaContainer, None, None]:
     """One Redpanda broker for the whole test session, on the image compose runs."""
-    with RedpandaContainer("redpandadata/redpanda:v26.1.14") as redpanda:
-        yield redpanda
+    container = _start_redpanda()
+    yield container
+    container.stop()
 
 
 @pytest.fixture(scope="session")
