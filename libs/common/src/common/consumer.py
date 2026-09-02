@@ -114,3 +114,39 @@ def handle_message(
             handler(session, envelope)
         session.commit()
     consumer.commit(message, asynchronous=False)
+
+
+def run_forever(
+    session_factory: Callable[[], Session],
+    *,
+    consumer: Consumer,
+    processed_events: type[ProcessedEventMixin],
+    handler: Handler,
+    config: ConsumerConfig,
+) -> None:
+    """Consume the topic until something stops the process, one message at a time.
+
+    A None from poll() is the ordinary idle case, not an error. Returning to
+    poll() promptly is itself a requirement: a consumer that stays silent for
+    longer than max.poll.interval.ms is evicted from its group and its
+    partitions are handed to someone else (design §5.5).
+    """
+    consumer.subscribe([config.topic])
+    try:
+        while True:
+            message = consumer.poll(config.poll_timeout)
+            if message is None:
+                continue
+            error = message.error()
+            if error is not None:
+                raise RuntimeError(f"the broker reported {error}")
+            handle_message(
+                message,
+                session_factory=session_factory,
+                consumer=consumer,
+                processed_events=processed_events,
+                handler=handler,
+                config=config,
+            )
+    finally:
+        consumer.close()
