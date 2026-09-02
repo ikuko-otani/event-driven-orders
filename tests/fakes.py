@@ -54,23 +54,41 @@ class FakeProducer:
 
 @dataclass(frozen=True)
 class FakeMessage:
-    """One consumed message, carrying only the bytes the loop reads."""
+    """One consumed message: the bytes the loop reads, and the error it checks."""
 
     body: bytes
+    broker_error: str | None = None
 
     def value(self) -> bytes | None:
         return self.body
 
+    def error(self) -> object | None:
+        return self.broker_error
+
 
 class FakeConsumer:
-    """A consumer that records whose offset was committed, and nothing else.
+    """A consumer that replays a script of polls and records what was committed.
 
-    It cannot fail a commit and it never rebalances; what it does model is the
-    only thing the loop itself decides — whether the offset commit is reached.
+    poll() hands back the scripted results in order, then None once the script
+    is exhausted — the same "nothing to deliver" a real consumer reports on an
+    idle timeout. It offers no way to stop the loop, because the real client
+    offers none either: the loop ends when something raises.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, polls: list[Message | None] | None = None) -> None:
         self.committed: list[Message] = []
+        self.subscribed: list[str] = []
+        self.closed = False
+        self._polls: list[Message | None] = list(polls or [])
+
+    def subscribe(self, topics: list[str]) -> None:
+        self.subscribed = list(topics)
+
+    def poll(self, timeout: float) -> Message | None:
+        return self._polls.pop(0) if self._polls else None
 
     def commit(self, message: Message, *, asynchronous: bool) -> None:
         self.committed.append(message)
+
+    def close(self) -> None:
+        self.closed = True
