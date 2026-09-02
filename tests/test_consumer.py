@@ -10,7 +10,7 @@ from fakes import FakeConsumer, FakeMessage
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from common.consumer import ConsumerConfig, handle_message
+from common.consumer import ConsumerConfig, handle_message, run_forever
 from inventory_worker.models import Outbox, ProcessedEvent
 
 CONFIG = ConsumerConfig(topic="orders.events", group_id="inventory-worker")
@@ -116,3 +116,53 @@ async def test_a_failing_handler_leaves_the_offset_uncommitted(
     assert len(consumer.committed) == 0
     assert len(sync_session.scalars(select(ProcessedEvent)).all()) == 0
     assert len(sync_session.scalars(select(Outbox)).all()) == 0
+
+
+@pytest.mark.asyncio
+async def test_the_loop_handles_a_message_and_ends_when_the_handler_raises(
+    sync_session: Session, sync_session_factory: Callable[[], Session]
+) -> None:
+    seen: list[dict[str, Any]] = []
+    record = _recording_handler(seen)
+
+    def handler(session: Session, envelope: dict[str, Any]) -> None:
+        """Handle the first message, then fail — the only way run_forever ends."""
+        if seen:
+            raise RuntimeError("the database went away")
+        record(session, envelope)
+
+    first = _message(uuid.uuid4())
+    consumer = FakeConsumer([first, None, _message(uuid.uuid4())])
+
+    with pytest.raises(RuntimeError):
+        run_forever(
+            sync_session_factory,
+            consumer=consumer,
+            processed_events=ProcessedEvent,
+            handler=handler,
+            config=CONFIG,
+        )
+
+    assert len(seen) == 1
+    assert consumer.subscribed == ["orders.events"]
+    assert consumer.committed == [first]
+    assert consumer.closed
+
+
+@pytest.mark.asyncio
+async def test_a_broker_error_ends_the_loop_without_committing_the_offset(
+    sync_session_factory: Callable[[], Session],
+) -> None:
+    consumer = FakeConsumer([FakeMessage(b"", broker_error="all brokers are down")])
+
+    with pytest.raises(RuntimeError):
+        run_forever(
+            sync_session_factory,
+            consumer=consumer,
+            processed_events=ProcessedEvent,
+            handler=_recording_handler([]),
+            config=CONFIG,
+        )
+
+    assert consumer.committed == []
+    assert consumer.closed
