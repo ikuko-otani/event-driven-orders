@@ -68,6 +68,24 @@ def _lock_inventory(
     return {row.item_id: row for row in rows}
 
 
+def _already_reserved(session: Session, *, order_id: uuid.UUID) -> bool:
+    """Report whether this order already holds active stock (design §3.2).
+
+    The partial unique index this reads against is the same one that makes a
+    double reservation impossible, so a row here means an earlier delivery of
+    this order was reserved and committed.
+    """
+    held = session.scalars(
+        select(InventoryReservation.id)
+        .where(
+            InventoryReservation.order_id == order_id,
+            InventoryReservation.status == "ACTIVE",
+        )
+        .limit(1)
+    ).first()
+    return held is not None
+
+
 def reserve_order(session: Session, event: dict[str, Any]) -> ReservationOutcome:
     """Reserve every line of one OrderConfirmed, or leave the stock untouched.
 
@@ -93,7 +111,13 @@ def reserve_order(session: Session, event: dict[str, Any]) -> ReservationOutcome
         available = 0 if row is None else row.quantity_on_hand - row.quantity_reserved
         if available < quantity:
             shortages.append(Shortage(item_id=item_id, requested=quantity, available=available))
+    # A duplicate delivery looks exactly like a shortage: the order's own first
+    # reservation raised the counter that now reads as unavailable. Rule that
+    # out before reporting a business failure that would compensate a reserved
+    # order (design §3.2).
     if shortages:
+        if _already_reserved(session, order_id=order_id):
+            return AlreadyReserved()
         return Insufficient(shortages=shortages)
 
     # Every line passed, so take the stock: raise each counter and record a reservation row.
