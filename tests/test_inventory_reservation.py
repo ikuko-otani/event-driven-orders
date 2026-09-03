@@ -18,7 +18,12 @@ from sqlalchemy.orm import Session
 
 from common.envelope import envelope
 from inventory_worker.models import Inventory, InventoryReservation
-from inventory_worker.services.reservations import Insufficient, Reserved, reserve_order
+from inventory_worker.services.reservations import (
+    AlreadyReserved,
+    Insufficient,
+    Reserved,
+    reserve_order,
+)
 from order_api.events import order_confirmed_outbox
 from order_api.models import Item
 
@@ -45,6 +50,16 @@ async def _confirmed_order_event(
     await session.commit()
     await session.refresh(row)
     return envelope(row)
+
+
+def _redelivered_as_a_new_event(event: dict[str, Any]) -> dict[str, Any]:
+    """The same OrderConfirmed carrying a fresh event_id (design §5.7).
+
+    Two confirms racing each other write two outbox rows with distinct ids and
+    an identical payload — the one duplicate processed_events cannot absorb,
+    because it deduplicates on exactly the field that differs.
+    """
+    return {**event, "event_id": str(uuid.uuid4())}
 
 
 @pytest.mark.asyncio
@@ -76,3 +91,19 @@ async def test_one_short_line_reserves_nothing_at_all(
     assert [(s.requested, s.available) for s in outcome.shortages] == [(2, 1)]
     assert list(sync_session.scalars(select(InventoryReservation))) == []
     assert sorted(sync_session.scalars(select(Inventory.quantity_reserved))) == [0, 0]
+
+
+@pytest.mark.asyncio
+async def test_a_second_confirm_of_the_same_order_reserves_no_more_stock(
+    db_session: AsyncSession, sync_session: Session
+) -> None:
+    event = await _confirmed_order_event(db_session, lines=[(100, 3), (50, 2)])
+    reserve_order(sync_session, event)
+    sync_session.commit()
+
+    outcome = reserve_order(sync_session, _redelivered_as_a_new_event(event))
+    sync_session.commit()
+
+    assert isinstance(outcome, AlreadyReserved)
+    assert len(list(sync_session.scalars(select(InventoryReservation)))) == 2
+    assert sorted(sync_session.scalars(select(Inventory.quantity_reserved))) == [2, 3]
