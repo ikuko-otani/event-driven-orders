@@ -97,6 +97,8 @@ async def test_one_short_line_reserves_nothing_at_all(
 async def test_a_second_confirm_of_the_same_order_reserves_no_more_stock(
     db_session: AsyncSession, sync_session: Session
 ) -> None:
+    # (stock on hand, quantity ordered) per line — stocked well above the order,
+    # so the redelivery still passes the availability check and reaches the index.
     event = await _confirmed_order_event(db_session, lines=[(100, 3), (50, 2)])
     reserve_order(sync_session, event)
     sync_session.commit()
