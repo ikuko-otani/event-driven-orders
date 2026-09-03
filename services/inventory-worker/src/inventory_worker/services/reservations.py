@@ -75,6 +75,8 @@ def reserve_order(session: Session, event: dict[str, Any]) -> ReservationOutcome
     writes start only once every line has passed: reserving line by line would
     leave stock held for an order that is about to fail (design §5.2).
     """
+
+    # Pull out what reserving needs: the ids sit on the envelope, the lines in the payload.
     entity_id = uuid.UUID(event["entity_id"])
     event_id = uuid.UUID(event["event_id"])
     payload = event["payload"]
@@ -84,6 +86,7 @@ def reserve_order(session: Session, event: dict[str, Any]) -> ReservationOutcome
     }
     stock = _lock_inventory(session, entity_id=entity_id, item_ids=list(lines))
 
+    # Judge every line before writing anything — all-or-nothing needs the full verdict first.
     shortages: list[Shortage] = []
     for item_id, quantity in lines.items():
         row = stock.get(item_id)
@@ -93,6 +96,7 @@ def reserve_order(session: Session, event: dict[str, Any]) -> ReservationOutcome
     if shortages:
         return Insufficient(shortages=shortages)
 
+    # Every line passed, so take the stock: raise each counter and record a reservation row.
     reservations: list[InventoryReservation] = []
     for item_id, quantity in lines.items():
         stock[item_id].quantity_reserved += quantity
