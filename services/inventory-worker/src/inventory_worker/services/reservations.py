@@ -10,8 +10,12 @@ and the retry machinery would repeat a permanent business condition forever
 
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
-from inventory_worker.models import InventoryReservation
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from inventory_worker.models import Inventory, InventoryReservation
 
 
 @dataclass(frozen=True)
@@ -43,3 +47,22 @@ class Insufficient:
 
 
 ReservationOutcome = Reserved | AlreadyReserved | Insufficient
+
+
+def _lock_inventory(
+    session: Session, *, entity_id: uuid.UUID, item_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, Inventory]:
+    """Lock this order's stock rows, always in item_id order (design §3.2).
+
+    Two orders wanting the same two items would deadlock if they took the two
+    locks in opposite orders, so the order is fixed for every caller. One
+    query is enough: PostgreSQL sorts the rows before it locks them, so the
+    locks are taken in the sorted order the plan produced.
+    """
+    rows = session.scalars(
+        select(Inventory)
+        .where(Inventory.entity_id == entity_id, Inventory.item_id.in_(item_ids))
+        .order_by(Inventory.item_id)
+        .with_for_update()
+    )
+    return {row.item_id: row for row in rows}
