@@ -66,3 +66,44 @@ def _lock_inventory(
         .with_for_update()
     )
     return {row.item_id: row for row in rows}
+
+
+def reserve_order(session: Session, event: dict[str, Any]) -> ReservationOutcome:
+    """Reserve every line of one OrderConfirmed, or leave the stock untouched.
+
+    Availability is judged for all lines while their rows are locked, and the
+    writes start only once every line has passed: reserving line by line would
+    leave stock held for an order that is about to fail (design §5.2).
+    """
+    entity_id = uuid.UUID(event["entity_id"])
+    event_id = uuid.UUID(event["event_id"])
+    payload = event["payload"]
+    order_id = uuid.UUID(payload["order_id"])
+    lines: dict[uuid.UUID, int] = {
+        uuid.UUID(line["item_id"]): line["quantity"] for line in payload["lines"]
+    }
+    stock = _lock_inventory(session, entity_id=entity_id, item_ids=list(lines))
+
+    shortages: list[Shortage] = []
+    for item_id, quantity in lines.items():
+        row = stock.get(item_id)
+        available = 0 if row is None else row.quantity_on_hand - row.quantity_reserved
+        if available < quantity:
+            shortages.append(Shortage(item_id=item_id, requested=quantity, available=available))
+    if shortages:
+        return Insufficient(shortages=shortages)
+
+    reservations: list[InventoryReservation] = []
+    for item_id, quantity in lines.items():
+        stock[item_id].quantity_reserved += quantity
+        reservation = InventoryReservation(
+            entity_id=entity_id,
+            order_id=order_id,
+            item_id=item_id,
+            quantity=quantity,
+            created_by_event=event_id,
+        )
+        session.add(reservation)
+        reservations.append(reservation)
+    session.flush()
+    return Reserved(reservations=reservations)
