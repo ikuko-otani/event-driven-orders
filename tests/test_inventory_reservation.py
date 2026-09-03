@@ -131,15 +131,16 @@ async def test_a_duplicate_is_not_reported_as_a_shortage(
 
 
 @pytest.mark.asyncio
-async def test_a_reservation_holds_its_stock_rows_against_a_second_reserver(
+async def test_a_reservation_holds_its_stock_rows_while_it_judges(
     db_session: AsyncSession,
     sync_session: Session,
     sync_session_factory: Callable[[], Session],
 ) -> None:
-    # Reserve without committing, so the FOR UPDATE locks are still held when
-    # the second session arrives — the state a concurrent consumer would meet.
-    event = await _confirmed_order_event(db_session, lines=[(100, 3)])
-    reserve_order(sync_session, event)
+    # A short order writes nothing at all, so FOR UPDATE is the only thing that
+    # can still be holding a lock. Going through a successful reservation would
+    # prove nothing: its UPDATE locks the same row on its own (design §3.2).
+    event = await _confirmed_order_event(db_session, lines=[(1, 3)])
+    assert isinstance(reserve_order(sync_session, event), Insufficient)
 
     # NOWAIT turns "wait for the lock" into "fail immediately", so the lock can
     # be observed without a second thread that would simply block forever.
