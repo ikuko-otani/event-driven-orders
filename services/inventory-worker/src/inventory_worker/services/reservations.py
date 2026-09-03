@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from inventory_worker.models import Inventory, InventoryReservation
@@ -120,18 +121,28 @@ def reserve_order(session: Session, event: dict[str, Any]) -> ReservationOutcome
             return AlreadyReserved()
         return Insufficient(shortages=shortages)
 
-    # Every line passed, so take the stock: raise each counter and record a reservation row.
+    # Every line passed, so take the stock: raise each counter and record a
+    # reservation row. A SAVEPOINT scopes those writes, because the index below
+    # can reject them and the caller's processed_events claim shares this
+    # transaction — an aborted transaction would take the claim down with it.
     reservations: list[InventoryReservation] = []
-    for item_id, quantity in lines.items():
-        stock[item_id].quantity_reserved += quantity
-        reservation = InventoryReservation(
-            entity_id=entity_id,
-            order_id=order_id,
-            item_id=item_id,
-            quantity=quantity,
-            created_by_event=event_id,
-        )
-        session.add(reservation)
-        reservations.append(reservation)
-    session.flush()
+    try:
+        with session.begin_nested():
+            for item_id, quantity in lines.items():
+                stock[item_id].quantity_reserved += quantity
+                reservation = InventoryReservation(
+                    entity_id=entity_id,
+                    order_id=order_id,
+                    item_id=item_id,
+                    quantity=quantity,
+                    created_by_event=event_id,
+                )
+                session.add(reservation)
+                reservations.append(reservation)
+            session.flush()
+    except IntegrityError:
+        # The active-reservation index refused a second row for this order, so
+        # the stock is already held: an idempotent no-op, never a retry or a
+        # DLQ case (design §3.2).
+        return AlreadyReserved()
     return Reserved(reservations=reservations)
