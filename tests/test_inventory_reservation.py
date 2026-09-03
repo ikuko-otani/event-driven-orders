@@ -109,3 +109,21 @@ async def test_a_second_confirm_of_the_same_order_reserves_no_more_stock(
     assert isinstance(outcome, AlreadyReserved)
     assert len(list(sync_session.scalars(select(InventoryReservation)))) == 2
     assert sorted(sync_session.scalars(select(Inventory.quantity_reserved))) == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_is_not_reported_as_a_shortage(
+    db_session: AsyncSession, sync_session: Session
+) -> None:
+    # Stocked to exactly the order, so the first reservation leaves no room and
+    # the redelivery reads as short — a failure this very order already fixed.
+    event = await _confirmed_order_event(db_session, lines=[(3, 3)])
+    reserve_order(sync_session, event)
+    sync_session.commit()
+
+    outcome = reserve_order(sync_session, _redelivered_as_a_new_event(event))
+    sync_session.commit()
+
+    assert isinstance(outcome, AlreadyReserved)
+    assert len(list(sync_session.scalars(select(InventoryReservation)))) == 1
+    assert list(sync_session.scalars(select(Inventory.quantity_reserved))) == [3]
