@@ -1,7 +1,7 @@
 """Reserving an order's stock, with no broker running (design §7.7)."""
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import pytest
@@ -13,6 +13,7 @@ from factories import (
     make_sales_entity,
 )
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -127,3 +128,20 @@ async def test_a_duplicate_is_not_reported_as_a_shortage(
     assert isinstance(outcome, AlreadyReserved)
     assert len(list(sync_session.scalars(select(InventoryReservation)))) == 1
     assert list(sync_session.scalars(select(Inventory.quantity_reserved))) == [3]
+
+
+@pytest.mark.asyncio
+async def test_a_reservation_holds_its_stock_rows_against_a_second_reserver(
+    db_session: AsyncSession,
+    sync_session: Session,
+    sync_session_factory: Callable[[], Session],
+) -> None:
+    # Reserve without committing, so the FOR UPDATE locks are still held when
+    # the second session arrives — the state a concurrent consumer would meet.
+    event = await _confirmed_order_event(db_session, lines=[(100, 3)])
+    reserve_order(sync_session, event)
+
+    # NOWAIT turns "wait for the lock" into "fail immediately", so the lock can
+    # be observed without a second thread that would simply block forever.
+    with sync_session_factory() as other, pytest.raises(OperationalError):
+        other.scalars(select(Inventory).with_for_update(nowait=True)).all()
