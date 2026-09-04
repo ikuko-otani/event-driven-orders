@@ -1,10 +1,8 @@
 name: event-driven-orders
 
-# Only the infrastructure runs here for now.
-# The two outbox pollers are separate processes (design §5.4) and are added
-# when the outbox tables exist.
-# Each poller is a strict singleton: never set `replicas` or scale it,
-# because concurrent pollers break per-order publish ordering.
+# Each outbox poller is a process of its own (design §5.4) and a strict
+# singleton: never set `replicas` or scale one, because two pollers publish
+# one order's events out of order.
 
 services:
   postgres:
@@ -138,17 +136,41 @@ services:
     build:
       context: .
       dockerfile: services/inventory-worker/Dockerfile
+    # No healthcheck on purpose: "the process is running" would report healthy
+    # while the consumer sits disconnected from the broker, consuming nothing.
+    # Consumer lag is the signal that means anything here (design §6.4).
+    environment:
+      DB_HOST: postgres
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
     depends_on:
       postgres:
         condition: service_healthy
-      redpanda:
+      redpanda-init:
+        condition: service_completed_successfully
+
+  inventory-worker-poller:
+    build:
+      context: .
+      dockerfile: services/inventory-worker/Dockerfile
+    # The same image as inventory-worker, running a different process: the
+    # poller is a process of its own by design (§5.4) and a strict singleton.
+    command:
+      - uv
+      - run
+      - --no-sync
+      - --package
+      - inventory-worker
+      - python
+      - -m
+      - inventory_worker.poller
+    environment:
+      DB_HOST: postgres
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    depends_on:
+      postgres:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "find /tmp/heartbeat -mmin -1 | grep -q ."]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
+      redpanda-init:
+        condition: service_completed_successfully
 
 volumes:
   postgres-data:
