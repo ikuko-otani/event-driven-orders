@@ -64,6 +64,7 @@ services:
       - topic
       - create
       - orders.events
+      - inventory.events
       - -p
       - "12"
       - --if-not-exists
