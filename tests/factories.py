@@ -11,10 +11,13 @@ from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from common.envelope import envelope
-from inventory_worker.models import Inventory
+from inventory_worker.handlers import handle_order_confirmed
+from inventory_worker.models import Inventory, Outbox
 from order_api.events import order_confirmed_outbox
 from order_api.models import Customer, Item, Order, OrderLine, SalesEntity
 from order_api.services.orders import next_order_number
@@ -138,3 +141,26 @@ def make_redelivery(event: dict[str, Any]) -> dict[str, Any]:
     because it deduplicates on exactly the field that differs.
     """
     return {**event, "event_id": str(uuid4())}
+
+
+async def make_inventory_reserved_event(
+    session: AsyncSession,
+    sync_session: Session,
+    *,
+    lines: Sequence[tuple[int, int]] = ((100, 3),),
+) -> dict[str, Any]:
+    """Replay confirm → reserve, and return the InventoryReserved that came back.
+
+    The event is produced by running the real reservation handler rather than
+    assembled by hand: order-api's consumer must be tested against the bytes
+    the other service actually publishes (design §1).
+    """
+    # Two sessions on purpose: the order is seeded through the async engine the
+    # API uses, and the worker's handler is synchronous, as its process is.
+    confirmed = await make_confirmed_order_event(session, lines=lines)
+    handle_order_confirmed(sync_session, confirmed)
+    sync_session.commit()
+
+    # The row the worker wrote to its own outbox is what its poller would
+    # publish, so the envelope built from it is what order-api would receive.
+    return envelope(sync_session.scalars(select(Outbox)).one())
