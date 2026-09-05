@@ -132,6 +132,32 @@ services:
       redpanda-init:
         condition: service_completed_successfully
 
+  order-api-consumer:
+    build:
+      context: .
+      dockerfile: services/order-api/Dockerfile
+    # The same image as `api`, running a different process: an HTTP server and
+    # a consumer scale by different rules, so they are never one process.
+    # No healthcheck on purpose — "the process is running" reports healthy
+    # while the consumer sits disconnected, consuming nothing (design §6.4).
+    command:
+      - uv
+      - run
+      - --no-sync
+      - --package
+      - order-api
+      - python
+      - -m
+      - order_api.consumer
+    environment:
+      DB_HOST: postgres
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+
   inventory-worker:
     build:
       context: .
