@@ -8,11 +8,17 @@ here, so callers control the transaction boundary.
 from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
+from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
-from inventory_worker.models import Inventory
+from common.envelope import envelope
+from inventory_worker.handlers import handle_order_confirmed
+from inventory_worker.models import Inventory, Outbox
+from order_api.events import order_confirmed_outbox
 from order_api.models import Customer, Item, Order, OrderLine, SalesEntity
 from order_api.services.orders import next_order_number
 
@@ -96,3 +102,65 @@ async def make_order(
     session.add(order)
     await session.flush()
     return order
+
+
+async def make_confirmed_order_event(
+    session: AsyncSession, *, lines: Sequence[tuple[int, int]]
+) -> dict[str, Any]:
+    """Seed stock and a CONFIRMED order, and return the event its confirm published.
+
+    Each pair is one line: the stock that exists, and the quantity ordered.
+    """
+    # One item, one inventory row and one order line per pair, so a test states
+    # only the numbers that decide the outcome it is about.
+    entity = await make_sales_entity(session)
+    customer = await make_customer(session, entity=entity)
+    ordered: list[tuple[Item, int]] = []
+    for index, (on_hand, quantity) in enumerate(lines):
+        item = await make_item(session, code=f"ITEM-{index:02d}")
+        await make_inventory(session, entity=entity, item=item, quantity_on_hand=on_hand)
+        ordered.append((item, quantity))
+
+    # Build the event from a real outbox row, never by hand: a consumer test
+    # must read exactly the bytes the poller would publish (design §4.1).
+    order = await make_order(
+        session, entity=entity, customer=customer, lines=ordered, status="CONFIRMED"
+    )
+    row = order_confirmed_outbox(order)
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return envelope(row)
+
+
+def make_redelivery(event: dict[str, Any]) -> dict[str, Any]:
+    """The same event carrying a fresh event_id (design §5.7).
+
+    Two confirms racing each other write two outbox rows with distinct ids and
+    an identical payload — the one duplicate processed_events cannot absorb,
+    because it deduplicates on exactly the field that differs.
+    """
+    return {**event, "event_id": str(uuid4())}
+
+
+async def make_inventory_reserved_event(
+    session: AsyncSession,
+    sync_session: Session,
+    *,
+    lines: Sequence[tuple[int, int]] = ((100, 3),),
+) -> dict[str, Any]:
+    """Replay confirm → reserve, and return the InventoryReserved that came back.
+
+    The event is produced by running the real reservation handler rather than
+    assembled by hand: order-api's consumer must be tested against the bytes
+    the other service actually publishes (design §1).
+    """
+    # Two sessions on purpose: the order is seeded through the async engine the
+    # API uses, and the worker's handler is synchronous, as its process is.
+    confirmed = await make_confirmed_order_event(session, lines=lines)
+    handle_order_confirmed(sync_session, confirmed)
+    sync_session.commit()
+
+    # The row the worker wrote to its own outbox is what its poller would
+    # publish, so the envelope built from it is what order-api would receive.
+    return envelope(sync_session.scalars(select(Outbox)).one())

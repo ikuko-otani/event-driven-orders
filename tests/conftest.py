@@ -7,7 +7,8 @@ verify, and they are what this schema's correctness rests on.
 
 import os
 import uuid
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Callable, Generator
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -22,14 +23,14 @@ from confluent_kafka import Consumer
 from confluent_kafka.admin import AdminClient, NewTopic  # type: ignore[attr-defined]
 from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis
-from sqlalchemy import create_engine, text
+from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from testcontainers.community.kafka import RedpandaContainer
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
@@ -89,11 +90,32 @@ def configured_redis(redis_container: RedisContainer) -> str:
     return RedisSettings().url
 
 
+def _start_redpanda(attempts: int = 3) -> RedpandaContainer:
+    """Start the broker, retrying a start race inside testcontainers itself.
+
+    The module pushes the start script into an already-running container whose
+    shell waits on `[ -f script ]` — existence, not content — so under host load
+    the file can be seen while still empty, run as a no-op, and the container
+    exits 0 with no broker in it. Retrying is the only lever available here.
+    """
+    while True:
+        attempts -= 1
+        container = RedpandaContainer("redpandadata/redpanda:v26.1.14")
+        try:
+            return container.start(timeout=30)
+        except RuntimeError:
+            with suppress(Exception):
+                container.stop()
+            if attempts == 0:
+                raise
+
+
 @pytest.fixture(scope="session")
 def redpanda_container() -> Generator[RedpandaContainer, None, None]:
     """One Redpanda broker for the whole test session, on the image compose runs."""
-    with RedpandaContainer("redpandadata/redpanda:v26.1.14") as redpanda:
-        yield redpanda
+    container = _start_redpanda()
+    yield container
+    container.stop()
 
 
 @pytest.fixture(scope="session")
@@ -205,13 +227,21 @@ async def api_client(
 
 
 @pytest.fixture
-def sync_session(migrated_database: str) -> Generator[Session, None, None]:
-    """A synchronous Session, because the poller is a synchronous process.
-
-    It reaches the same container over its own connection, exactly as the
-    poller reaches the database in production — never sharing the app's.
-    """
+def sync_engine(migrated_database: str) -> Generator[Engine, None, None]:
+    """A synchronous engine per test: the poller and the consumers are sync processes."""
     engine = create_engine(DatabaseSettings().sync_url)
-    with Session(engine) as session:
-        yield session
+    yield engine
     engine.dispose()
+
+
+@pytest.fixture
+def sync_session(sync_engine: Engine) -> Generator[Session, None, None]:
+    """One synchronous Session, reaching the container over its own connection."""
+    with Session(sync_engine) as session:
+        yield session
+
+
+@pytest.fixture
+def sync_session_factory(sync_engine: Engine) -> Callable[[], Session]:
+    """What a consuming process is given: a way to open one session per message."""
+    return sessionmaker(sync_engine)

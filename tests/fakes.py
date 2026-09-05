@@ -1,7 +1,9 @@
 """Test doubles for infrastructure the unit tests deliberately do not start."""
 
 from dataclasses import dataclass
+from typing import Literal
 
+from common.consumer import Message
 from common.poller import DeliveryCallback
 
 
@@ -49,3 +51,45 @@ class FakeProducer:
             callback(self.errors.get(key), None)
         self._pending.clear()
         return 0
+
+
+@dataclass(frozen=True)
+class FakeMessage:
+    """One consumed message: the bytes the loop reads, and the error it checks."""
+
+    body: bytes
+    broker_error: str | None = None
+
+    def value(self) -> bytes | None:
+        return self.body
+
+    def error(self) -> object | None:
+        return self.broker_error
+
+
+class FakeConsumer:
+    """A consumer that replays a script of polls and records what was committed.
+
+    poll() hands back the scripted results in order, then None once the script
+    is exhausted — the same "nothing to deliver" a real consumer reports on an
+    idle timeout. It offers no way to stop the loop, because the real client
+    offers none either: the loop ends when something raises.
+    """
+
+    def __init__(self, polls: list[Message | None] | None = None) -> None:
+        self.committed: list[Message] = []
+        self.subscribed: list[str] = []
+        self.closed = False
+        self._polls: list[Message | None] = list(polls or [])
+
+    def subscribe(self, topics: list[str]) -> None:
+        self.subscribed = list(topics)
+
+    def poll(self, timeout: float) -> Message | None:
+        return self._polls.pop(0) if self._polls else None
+
+    def commit(self, *, message: Message, asynchronous: Literal[False]) -> None:
+        self.committed.append(message)
+
+    def close(self) -> None:
+        self.closed = True
