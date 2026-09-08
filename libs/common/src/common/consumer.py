@@ -7,6 +7,8 @@ purpose — the Kafka consumer blocks, exactly as the producer does.
 """
 
 import json
+import random
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,6 +18,15 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from common.messaging import ProcessedEventMixin
+
+
+class PermanentFailure(Exception):
+    """A failure that would fail identically on every attempt (design §5.7).
+
+    Retrying it only spends the backoff schedule to arrive at the same
+    outcome, so the retry loop lets it through untouched and the message goes
+    to the dead-letter path on its first attempt.
+    """
 
 
 class Message(Protocol):
@@ -53,11 +64,27 @@ class ConsumerConfig:
     redelivery to a different instance would not be recognised as a duplicate.
     poll_timeout is how long one poll waits before reporting that nothing
     arrived; it costs only idle latency, never a missed message.
+    max_attempts and retry_base fix design §5.5's schedule: five attempts,
+    with the wait ceiling doubling from retry_base. Lengthening either means
+    re-checking max.poll.interval.ms, which the total must stay well below.
     """
 
     topic: str
     group_id: str
     poll_timeout: float = 1.0
+    max_attempts: int = 5
+    retry_base: float = 1.0
+
+
+def _backoff(attempt: int, *, base: float) -> float:
+    """How long to wait after a failed attempt: full jitter (design §5.5).
+
+    The ceiling doubles per attempt — 1 s, 2 s, 4 s, 8 s from a 1 s base — and
+    the wait is a random point below it, never the ceiling itself. Waiting the
+    ceiling exactly would make every consumer of one recovering database retry
+    in the same instant, which is the spike the jitter exists to break up.
+    """
+    return random.uniform(0, base * 2 ** (attempt - 1))
 
 
 def _claim(
@@ -101,10 +128,16 @@ def handle_message(
     normally. Committing the offset first would instead let Kafka consider a
     message consumed that no transaction ever recorded — at-most-once.
     """
+    # Decoding is judged here rather than in the retry loop: whether a failure
+    # can be retried is a property of the failure, and only this step knows
+    # that its own failures are permanent (design §5.7).
     value = message.value()
     if value is None:
-        raise ValueError("message carries no value")
-    envelope = json.loads(value)
+        raise PermanentFailure("the message carries no value")
+    try:
+        envelope = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise PermanentFailure(f"the message is not JSON: {error}") from error
 
     with session_factory() as session:
         claimed = _claim(
@@ -119,6 +152,50 @@ def handle_message(
     consumer.commit(message=message, asynchronous=False)
 
 
+def handle_with_retry(
+    message: Message,
+    *,
+    session_factory: Callable[[], Session],
+    consumer: Consumer,
+    processed_events: type[ProcessedEventMixin],
+    handler: Handler,
+    config: ConsumerConfig,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Process one message, retrying a technical failure in place (design §5.5).
+
+    Retrying in place blocks the partition behind this message, which is the
+    deliberate trade: a technical failure is usually environmental, so the
+    messages waiting behind it would fail identically anyway, and blocking is
+    what keeps one order's events in their order. The attempt count lives in
+    this loop and nowhere else — persisting it would put the failure path back
+    on the database, the component most likely to be failing (design §5.5).
+    """
+    for attempt in range(1, config.max_attempts + 1):
+        # Each attempt runs the whole of handle_message, so a retry opens a
+        # fresh session and starts from a transaction the last failure did not
+        # dirty.
+        try:
+            handle_message(
+                message,
+                session_factory=session_factory,
+                consumer=consumer,
+                processed_events=processed_events,
+                handler=handler,
+                config=config,
+            )
+            return
+        # A shortage never arrives here — a business failure is a return value,
+        # not an exception (design §5.3). What arrives is permanent, which no
+        # amount of waiting fixes, or technical, which is worth another try.
+        except PermanentFailure:
+            raise
+        except Exception:
+            if attempt == config.max_attempts:
+                raise
+            sleep(_backoff(attempt, base=config.retry_base))
+
+
 def run_forever(
     session_factory: Callable[[], Session],
     *,
@@ -126,6 +203,7 @@ def run_forever(
     processed_events: type[ProcessedEventMixin],
     handler: Handler,
     config: ConsumerConfig,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Consume the topic until something stops the process, one message at a time.
 
@@ -143,13 +221,14 @@ def run_forever(
             error = message.error()
             if error is not None:
                 raise RuntimeError(f"the broker reported {error}")
-            handle_message(
+            handle_with_retry(
                 message,
                 session_factory=session_factory,
                 consumer=consumer,
                 processed_events=processed_events,
                 handler=handler,
                 config=config,
+                sleep=sleep,
             )
     finally:
         consumer.close()
