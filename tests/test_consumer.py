@@ -10,7 +10,13 @@ from fakes import FakeConsumer, FakeMessage
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from common.consumer import ConsumerConfig, handle_message, run_forever
+from common.consumer import (
+    ConsumerConfig,
+    PermanentFailure,
+    handle_message,
+    handle_with_retry,
+    run_forever,
+)
 from inventory_worker.models import Outbox, ProcessedEvent
 
 CONFIG = ConsumerConfig(topic="orders.events", group_id="inventory-worker")
@@ -141,6 +147,7 @@ async def test_the_loop_handles_a_message_and_ends_when_the_handler_raises(
             processed_events=ProcessedEvent,
             handler=handler,
             config=CONFIG,
+            sleep=lambda _: None,
         )
 
     assert len(seen) == 1
@@ -166,3 +173,84 @@ async def test_a_broker_error_ends_the_loop_without_committing_the_offset(
 
     assert consumer.committed == []
     assert consumer.closed
+
+
+@pytest.mark.asyncio
+async def test_a_technical_failure_is_retried_five_times_then_given_up(
+    sync_session_factory: Callable[[], Session],
+) -> None:
+    attempts = 0
+    slept: list[float] = []
+    consumer = FakeConsumer()
+
+    def handler(session: Session, envelope: dict[str, Any]) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("the database went away")
+
+    with pytest.raises(RuntimeError):
+        handle_with_retry(
+            _message(uuid.uuid4()),
+            session_factory=sync_session_factory,
+            consumer=consumer,
+            processed_events=ProcessedEvent,
+            handler=handler,
+            config=CONFIG,
+            sleep=slept.append,
+        )
+
+    assert attempts == 5
+    assert all(0 <= delay <= ceiling for delay, ceiling in zip(slept, [1, 2, 4, 8], strict=True))
+    assert consumer.committed == []
+
+
+@pytest.mark.asyncio
+async def test_a_failure_that_recovers_is_retried_until_it_succeeds(
+    sync_session: Session, sync_session_factory: Callable[[], Session]
+) -> None:
+    attempts = 0
+    slept: list[float] = []
+    consumer = FakeConsumer()
+    message = _message(uuid.uuid4())
+
+    def handler(session: Session, envelope: dict[str, Any]) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RuntimeError("the database is still coming back")
+
+    handle_with_retry(
+        message,
+        session_factory=sync_session_factory,
+        consumer=consumer,
+        processed_events=ProcessedEvent,
+        handler=handler,
+        config=CONFIG,
+        sleep=slept.append,
+    )
+
+    assert attempts == 3
+    assert len(slept) == 2
+    assert consumer.committed == [message]
+
+
+@pytest.mark.asyncio
+async def test_a_message_that_is_not_json_is_never_retried(
+    sync_session_factory: Callable[[], Session],
+) -> None:
+    slept: list[float] = []
+    consumer = FakeConsumer()
+
+    with pytest.raises(PermanentFailure):
+        handle_with_retry(
+            FakeMessage(b"this is not an envelope"),
+            session_factory=sync_session_factory,
+            consumer=consumer,
+            processed_events=ProcessedEvent,
+            handler=_recording_handler([]),
+            config=CONFIG,
+            sleep=slept.append,
+        )
+
+    assert slept == []
+    assert consumer.committed == []
