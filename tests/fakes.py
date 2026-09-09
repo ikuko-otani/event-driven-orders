@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from common.consumer import Message
+from common.consumer import Headers, Message
 from common.poller import DeliveryCallback
 
 
@@ -28,18 +28,30 @@ class FakeProducer:
 
     def __init__(
         self,
-        errors: dict[str, FakeDeliveryError] | None = None,
+        errors: dict[str | bytes | None, FakeDeliveryError] | None = None,
         *,
         flushes_needed: int = 1,
     ) -> None:
-        self.errors: dict[str, FakeDeliveryError] = errors or {}
-        self.messages: list[tuple[str, str, bytes]] = []
+        self.errors: dict[str | bytes | None, FakeDeliveryError] = errors or {}
+        self.messages: list[tuple[str, str | bytes | None, bytes | None]] = []
+        self.headers: list[Headers] = []
         self.flush_calls = 0
         self._flushes_needed = flushes_needed
-        self._pending: list[tuple[str, DeliveryCallback]] = []
+        self._pending: list[tuple[str | bytes | None, DeliveryCallback]] = []
 
-    def produce(self, topic: str, *, key: str, value: bytes, on_delivery: DeliveryCallback) -> None:
+    def produce(
+        self,
+        topic: str,
+        *,
+        key: str | bytes | None,
+        value: bytes | None,
+        on_delivery: DeliveryCallback,
+        headers: Headers | None = None,
+    ) -> None:
         self.messages.append((topic, key, value))
+        # Kept beside the message rather than inside it, so the poller's
+        # three-part tuple keeps its shape; only the dead-letter path sends any.
+        self.headers.append(headers or [])
         self._pending.append((key, on_delivery))
 
     def flush(self, timeout: float) -> int:

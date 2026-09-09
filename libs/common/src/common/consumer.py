@@ -7,17 +7,27 @@ purpose — the Kafka consumer blocks, exactly as the producer does.
 """
 
 import json
+import logging
 import random
 import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from common.messaging import ProcessedEventMixin
+
+logger = logging.getLogger(__name__)
+
+# Header values go on the wire as bytes, and the client encodes a str for us.
+# The type is spelled exactly as confluent-kafka spells it: list is invariant,
+# so a narrower spelling here would make the real producer fail this module's
+# protocol for no reason.
+Headers = list[tuple[str, str | bytes | None]]
 
 
 class PermanentFailure(Exception):
@@ -64,6 +74,27 @@ class Consumer(Protocol):
     def close(self) -> None: ...
 
 
+class DeadLetterProducer(Protocol):
+    """The slice of the Kafka producer API the dead-letter path uses.
+
+    Declared here rather than imported, exactly as the loop's consumer is: the
+    real client is assembled in common.kafka, and nothing in this module knows
+    which library it came from (design §5.2).
+    """
+
+    def produce(
+        self,
+        topic: str,
+        *,
+        key: bytes | None,
+        value: bytes | None,
+        headers: Headers,
+        on_delivery: Callable[[object | None, Any], None],
+    ) -> None: ...
+
+    def flush(self, timeout: float) -> int: ...
+
+
 Handler = Callable[[Session, dict[str, Any]], None]
 
 
@@ -86,6 +117,16 @@ class ConsumerConfig:
     poll_timeout: float = 1.0
     max_attempts: int = 5
     retry_base: float = 1.0
+    dlq_flush_timeout: float = 10.0
+
+    @property
+    def dlq_topic(self) -> str:
+        """This consumer's dead-letter topic: <topic>.<consumer>.dlq (design §4.2).
+
+        Derived, not configured: the pair it names is already fixed by the two
+        fields above, so a separate setting could only ever disagree with them.
+        """
+        return f"{self.topic}.{self.group_id}.dlq"
 
 
 def _backoff(attempt: int, *, base: float) -> float:
@@ -97,6 +138,78 @@ def _backoff(attempt: int, *, base: float) -> float:
     in the same instant, which is the spike the jitter exists to break up.
     """
     return random.uniform(0, base * 2 ** (attempt - 1))
+
+
+def _diagnostics(
+    message: Message, *, config: ConsumerConfig, error: Exception, attempts: int
+) -> Headers:
+    """What an operator needs to classify a dead-lettered message (design §5.6).
+
+    The diagnosis rides in headers so the value can stay byte-for-byte what was
+    published: re-injection is then a plain republish with no unwrap step, and
+    a message whose envelope could not even be parsed still arrives with a
+    readable account of why it is here.
+    """
+    return [
+        ("original_topic", str(message.topic())),
+        ("original_partition", str(message.partition())),
+        ("original_offset", str(message.offset())),
+        ("error_class", type(error).__name__),
+        ("error_message", str(error)),
+        ("attempts", str(attempts)),
+        ("failed_at", datetime.now(UTC).isoformat()),
+        ("consumer", config.group_id),
+    ]
+
+
+def dead_letter(
+    message: Message,
+    *,
+    consumer: Consumer,
+    producer: DeadLetterProducer,
+    config: ConsumerConfig,
+    error: Exception,
+    attempts: int,
+) -> None:
+    """Copy one message to the dead-letter topic, then let its offset move on (§5.6).
+
+    A failed publish plus a committed offset would be the one outcome the
+    design refuses — a message dropped in silence, with no redelivery left to
+    recover it — so the commit waits for the broker's ack.
+    """
+    # The delivery report is the ack, and it fires while flush() runs, exactly
+    # as the poller's does (design §5.4).
+    delivered: list[object | None] = []
+    producer.produce(
+        config.dlq_topic,
+        key=message.key(),
+        value=message.value(),
+        headers=_diagnostics(message, config=config, error=error, attempts=attempts),
+        on_delivery=lambda delivery_error, _message: delivered.append(delivery_error),
+    )
+    while producer.flush(config.dlq_flush_timeout) > 0:
+        # Every send resolves within message.timeout.ms, so this ends.
+        continue
+
+    # Anything but one clean ack means the copy is not stored anywhere. Raising
+    # leaves the offset uncommitted, so a restart has the message redelivered
+    # rather than lost (design §5.6).
+    if delivered != [None]:
+        raise RuntimeError(f"the dead-letter copy was not acked: {delivered}")
+
+    # The copy is durable now, so say so before the offset moves: DLQ depth is
+    # the operator's detection signal (design §5.6), and a silent hand-off
+    # leaves the failure invisible until someone thinks to look.
+    logger.error(
+        "event_dead_lettered",
+        extra={
+            "dlq_topic": config.dlq_topic,
+            "consumer": config.group_id,
+            "attempts": attempts,
+            "error_class": type(error).__name__,
+        },
+    )
+    consumer.commit(message=message, asynchronous=False)
 
 
 def _claim(
