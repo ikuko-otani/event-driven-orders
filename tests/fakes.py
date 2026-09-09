@@ -60,11 +60,31 @@ class FakeMessage:
     body: bytes
     broker_error: str | None = None
 
+    # A field cannot share its name with the method that returns it, so the
+    # position fields carry a prefix. The defaults stand in for an ordinary
+    # message; a test asserting on dead-letter headers sets them.
+    message_key: bytes | None = None
+    message_topic: str = "orders.events"
+    message_partition: int = 0
+    message_offset: int = 0
+
     def value(self) -> bytes | None:
         return self.body
 
     def error(self) -> object | None:
         return self.broker_error
+
+    def key(self) -> bytes | None:
+        return self.message_key
+
+    def topic(self) -> str | None:
+        return self.message_topic
+
+    def partition(self) -> int | None:
+        return self.message_partition
+
+    def offset(self) -> int | None:
+        return self.message_offset
 
 
 class FakeConsumer:

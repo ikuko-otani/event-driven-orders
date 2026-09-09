@@ -36,6 +36,18 @@ class Message(Protocol):
 
     def error(self) -> object | None: ...
 
+    # Where this message sits in the log, and the key it was published with.
+    # The dead-letter path copies the key so a re-injection lands on the same
+    # partition, and reports the position so an operator can find the original
+    # (design §5.6).
+    def key(self) -> bytes | None: ...
+
+    def topic(self) -> str | None: ...
+
+    def partition(self) -> int | None: ...
+
+    def offset(self) -> int | None: ...
+
 
 class Consumer(Protocol):
     """The slice of the Kafka consumer API this loop uses."""
