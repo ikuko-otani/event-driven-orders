@@ -5,11 +5,12 @@ from collections.abc import Callable
 
 import pytest
 from factories import make_confirmed_order_event, make_redelivery
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from common.consumer import PermanentFailure
 from inventory_worker.models import Inventory, InventoryReservation
 from inventory_worker.services.reservations import (
     AlreadyReserved,
@@ -102,3 +103,17 @@ async def test_a_reservation_holds_its_stock_rows_while_it_judges(
     # be observed without a second thread that would simply block forever.
     with sync_session_factory() as other, pytest.raises(OperationalError):
         other.scalars(select(Inventory).with_for_update(nowait=True)).all()
+
+
+@pytest.mark.asyncio
+async def test_a_line_whose_item_has_no_inventory_row_is_a_permanent_failure(
+    db_session: AsyncSession, sync_session: Session
+) -> None:
+    # Deleting the seeded row is how a test says "this item was never stocked":
+    # the factory always creates one, because every other case needs it.
+    event = await make_confirmed_order_event(db_session, lines=[(100, 3)])
+    sync_session.execute(delete(Inventory))
+    sync_session.commit()
+
+    with pytest.raises(PermanentFailure):
+        reserve_order(sync_session, event)

@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from common.consumer import PermanentFailure
 from inventory_worker.models import Inventory, InventoryReservation
 
 
@@ -105,13 +106,22 @@ def reserve_order(session: Session, event: dict[str, Any]) -> ReservationOutcome
     }
     stock = _lock_inventory(session, entity_id=entity_id, item_ids=list(lines))
 
+    # An item with no inventory row was never stocked at all: the masters are
+    # seeded, so this is a data-integrity fault that no retry and no stock
+    # movement can change. Reading it as "0 available" would compensate the
+    # order and bury the fault, which design §4.6 forbids.
+    missing = sorted(str(item_id) for item_id in lines if item_id not in stock)
+    if missing:
+        raise PermanentFailure(f"no inventory row for {', '.join(missing)}")
+
     # Judge every line before writing anything — all-or-nothing needs the full verdict first.
     shortages: list[Shortage] = []
     for item_id, quantity in lines.items():
-        row = stock.get(item_id)
-        available = 0 if row is None else row.quantity_on_hand - row.quantity_reserved
+        row = stock[item_id]
+        available = row.quantity_on_hand - row.quantity_reserved
         if available < quantity:
             shortages.append(Shortage(item_id=item_id, requested=quantity, available=available))
+
     # A duplicate delivery looks exactly like a shortage: the order's own first
     # reservation raised the counter that now reads as unavailable. Rule that
     # out before reporting a business failure that would compensate a reserved
