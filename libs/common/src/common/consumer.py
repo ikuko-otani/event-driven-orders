@@ -282,6 +282,7 @@ def handle_with_retry(
     *,
     session_factory: Callable[[], Session],
     consumer: Consumer,
+    producer: DeadLetterProducer,
     processed_events: type[ProcessedEventMixin],
     handler: Handler,
     config: ConsumerConfig,
@@ -313,11 +314,31 @@ def handle_with_retry(
         # A shortage never arrives here — a business failure is a return value,
         # not an exception (design §5.3). What arrives is permanent, which no
         # amount of waiting fixes, or technical, which is worth another try.
-        except PermanentFailure:
-            raise
-        except Exception:
+        except PermanentFailure as error:
+            # Waiting cannot change a permanent failure's outcome, so it skips
+            # the schedule entirely and leaves on its first attempt (§5.5).
+            dead_letter(
+                message,
+                consumer=consumer,
+                producer=producer,
+                config=config,
+                error=error,
+                attempts=attempt,
+            )
+            return
+        except Exception as error:
+            # The schedule is spent. The message leaves through the dead-letter
+            # path so the messages queued behind it can flow again (§5.6).
             if attempt == config.max_attempts:
-                raise
+                dead_letter(
+                    message,
+                    consumer=consumer,
+                    producer=producer,
+                    config=config,
+                    error=error,
+                    attempts=attempt,
+                )
+                return
             sleep(_backoff(attempt, base=config.retry_base))
 
 
@@ -325,6 +346,7 @@ def run_forever(
     session_factory: Callable[[], Session],
     *,
     consumer: Consumer,
+    producer: DeadLetterProducer,
     processed_events: type[ProcessedEventMixin],
     handler: Handler,
     config: ConsumerConfig,
@@ -350,6 +372,7 @@ def run_forever(
                 message,
                 session_factory=session_factory,
                 consumer=consumer,
+                producer=producer,
                 processed_events=processed_events,
                 handler=handler,
                 config=config,

@@ -6,13 +6,12 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-from fakes import FakeConsumer, FakeMessage
+from fakes import FakeConsumer, FakeMessage, FakeProducer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from common.consumer import (
     ConsumerConfig,
-    PermanentFailure,
     handle_message,
     handle_with_retry,
     run_forever,
@@ -125,9 +124,10 @@ async def test_a_failing_handler_leaves_the_offset_uncommitted(
 
 
 @pytest.mark.asyncio
-async def test_the_loop_handles_a_message_and_ends_when_the_handler_raises(
+async def test_the_loop_dead_letters_a_failing_message_and_keeps_going(
     sync_session: Session, sync_session_factory: Callable[[], Session]
 ) -> None:
+    """Handle the first message, then fail — the message behind it must still flow."""
     seen: list[dict[str, Any]] = []
     record = _recording_handler(seen)
 
@@ -138,12 +138,17 @@ async def test_the_loop_handles_a_message_and_ends_when_the_handler_raises(
         record(session, envelope)
 
     first = _message(uuid.uuid4())
-    consumer = FakeConsumer([first, None, _message(uuid.uuid4())])
+    poisoned = _message(uuid.uuid4())
+    consumer = FakeConsumer(
+        [first, poisoned, FakeMessage(b"", broker_error="all brokers are down")]
+    )
+    producer = FakeProducer()
 
     with pytest.raises(RuntimeError):
         run_forever(
             sync_session_factory,
             consumer=consumer,
+            producer=producer,
             processed_events=ProcessedEvent,
             handler=handler,
             config=CONFIG,
@@ -151,8 +156,8 @@ async def test_the_loop_handles_a_message_and_ends_when_the_handler_raises(
         )
 
     assert len(seen) == 1
-    assert consumer.subscribed == ["orders.events"]
-    assert consumer.committed == [first]
+    assert [topic for topic, _, _ in producer.messages] == ["orders.events.inventory-worker.dlq"]
+    assert consumer.committed == [first, poisoned]
     assert consumer.closed
 
 
@@ -161,11 +166,13 @@ async def test_a_broker_error_ends_the_loop_without_committing_the_offset(
     sync_session_factory: Callable[[], Session],
 ) -> None:
     consumer = FakeConsumer([FakeMessage(b"", broker_error="all brokers are down")])
+    producer = FakeProducer()
 
     with pytest.raises(RuntimeError):
         run_forever(
             sync_session_factory,
             consumer=consumer,
+            producer=producer,
             processed_events=ProcessedEvent,
             handler=_recording_handler([]),
             config=CONFIG,
@@ -176,7 +183,7 @@ async def test_a_broker_error_ends_the_loop_without_committing_the_offset(
 
 
 @pytest.mark.asyncio
-async def test_a_technical_failure_is_retried_five_times_then_given_up(
+async def test_a_technical_failure_is_retried_five_times_then_dead_lettered(
     sync_session_factory: Callable[[], Session],
 ) -> None:
     attempts = 0
@@ -188,20 +195,23 @@ async def test_a_technical_failure_is_retried_five_times_then_given_up(
         attempts += 1
         raise RuntimeError("the database went away")
 
-    with pytest.raises(RuntimeError):
-        handle_with_retry(
-            _message(uuid.uuid4()),
-            session_factory=sync_session_factory,
-            consumer=consumer,
-            processed_events=ProcessedEvent,
-            handler=handler,
-            config=CONFIG,
-            sleep=slept.append,
-        )
+    producer = FakeProducer()
+    message = _message(uuid.uuid4())
+    handle_with_retry(
+        message,
+        session_factory=sync_session_factory,
+        consumer=consumer,
+        producer=producer,
+        processed_events=ProcessedEvent,
+        handler=handler,
+        config=CONFIG,
+        sleep=slept.append,
+    )
 
     assert attempts == 5
     assert all(0 <= delay <= ceiling for delay, ceiling in zip(slept, [1, 2, 4, 8], strict=True))
-    assert consumer.committed == []
+    assert producer.messages[0][0] == "orders.events.inventory-worker.dlq"
+    assert consumer.committed == [message]
 
 
 @pytest.mark.asyncio
@@ -211,6 +221,7 @@ async def test_a_failure_that_recovers_is_retried_until_it_succeeds(
     attempts = 0
     slept: list[float] = []
     consumer = FakeConsumer()
+    producer = FakeProducer()
     message = _message(uuid.uuid4())
 
     def handler(session: Session, envelope: dict[str, Any]) -> None:
@@ -223,6 +234,7 @@ async def test_a_failure_that_recovers_is_retried_until_it_succeeds(
         message,
         session_factory=sync_session_factory,
         consumer=consumer,
+        producer=producer,
         processed_events=ProcessedEvent,
         handler=handler,
         config=CONFIG,
@@ -235,22 +247,25 @@ async def test_a_failure_that_recovers_is_retried_until_it_succeeds(
 
 
 @pytest.mark.asyncio
-async def test_a_message_that_is_not_json_is_never_retried(
+async def test_a_message_that_is_not_json_goes_straight_to_the_dead_letter_topic(
     sync_session_factory: Callable[[], Session],
 ) -> None:
     slept: list[float] = []
     consumer = FakeConsumer()
 
-    with pytest.raises(PermanentFailure):
-        handle_with_retry(
-            FakeMessage(b"this is not an envelope"),
-            session_factory=sync_session_factory,
-            consumer=consumer,
-            processed_events=ProcessedEvent,
-            handler=_recording_handler([]),
-            config=CONFIG,
-            sleep=slept.append,
-        )
+    producer = FakeProducer()
+    message = FakeMessage(b"this is not an envelope")
+    handle_with_retry(
+        message,
+        session_factory=sync_session_factory,
+        consumer=consumer,
+        producer=producer,
+        processed_events=ProcessedEvent,
+        handler=_recording_handler([]),
+        config=CONFIG,
+        sleep=slept.append,
+    )
 
     assert slept == []
-    assert consumer.committed == []
+    assert producer.messages[0][0] == "orders.events.inventory-worker.dlq"
+    assert consumer.committed == [message]

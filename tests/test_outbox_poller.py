@@ -41,6 +41,7 @@ async def test_publish_batch_sends_the_design_envelope_keyed_by_order_id(
     assert len(producer.messages) == 1
     topic, key, value = producer.messages[0]
     assert (topic, key) == ("orders.events", str(order.id))
+    assert value is not None
     sent = json.loads(value)
     assert sent["event_type"] == "OrderConfirmed"
     assert sent["event_version"] == 1
