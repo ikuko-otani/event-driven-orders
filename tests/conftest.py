@@ -86,7 +86,9 @@ def redis_container() -> Generator[RedisContainer, None, None]:
 def configured_redis(redis_container: RedisContainer) -> str:
     """Point REDIS_* at the container, the same way migrated_database points DB_*."""
     os.environ["REDIS_HOST"] = redis_container.get_container_host_ip()
-    os.environ["REDIS_PORT"] = str(redis_container.get_exposed_port(redis_container.port))
+    os.environ["REDIS_PORT"] = str(
+        redis_container.get_exposed_port(redis_container.port)
+    )
     return RedisSettings().url
 
 
@@ -126,21 +128,38 @@ def configured_kafka(redpanda_container: RedpandaContainer) -> str:
 
 
 @pytest.fixture
-def kafka_topic(configured_kafka: str) -> Generator[str, None, None]:
-    """A topic of this test's own, created explicitly and deleted afterwards.
+def make_topic(configured_kafka: str) -> Generator[Callable[[str], str], None, None]:
+    """Create topics by name for one test, and delete every one of them after it.
 
     Auto-creation is off (design §6.2), so a topic nobody creates is a send
-    that fails — never a 1-partition topic appearing silently. A topic shared
-    between tests would also let one test's leftovers answer the next test's
-    "was anything published?".
+    that fails — never a 1-partition topic appearing silently. The name is an
+    argument rather than a constant because the dead-letter path needs a
+    second topic whose name ConsumerConfig derives, not this fixture.
     """
     admin = AdminClient({"bootstrap.servers": configured_kafka})
-    topic = f"orders.events.{uuid.uuid4()}"
-    for future in admin.create_topics([NewTopic(topic, num_partitions=1)]).values():
-        future.result()
-    yield topic
-    for future in admin.delete_topics([topic]).values():
-        future.result()
+    created: list[str] = []
+
+    # Waiting on the future is what makes the topic exist before the test
+    # publishes to it; create_topics only queues the request.
+    def make(name: str) -> str:
+        for future in admin.create_topics([NewTopic(name, num_partitions=1)]).values():
+            future.result()
+        created.append(name)
+        return name
+
+    yield make
+
+    # A leftover topic would let one test's messages answer the next test's
+    # "was anything published?", so every topic goes away with its test.
+    if created:
+        for future in admin.delete_topics(created).values():
+            future.result()
+
+
+@pytest.fixture
+def kafka_topic(make_topic: Callable[[str], str]) -> str:
+    """The single source topic most tests need, named so it cannot collide."""
+    return make_topic(f"orders.events.{uuid.uuid4()}")
 
 
 @pytest.fixture
