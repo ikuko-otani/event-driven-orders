@@ -8,8 +8,10 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+from factories import make_confirmed_order_event
 from fakes import FakeConsumer, FakeDeliveryError, FakeMessage, FakeProducer
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from common.consumer import (
@@ -18,7 +20,8 @@ from common.consumer import (
     handle_with_retry,
     run_forever,
 )
-from inventory_worker.models import Outbox, ProcessedEvent
+from inventory_worker.handlers import handle_order_confirmed
+from inventory_worker.models import Inventory, Outbox, ProcessedEvent
 
 CONFIG = ConsumerConfig(topic="orders.events", group_id="inventory-worker")
 
@@ -372,3 +375,37 @@ async def test_a_dead_letter_the_broker_refused_leaves_the_offset_uncommitted(
         )
 
     assert consumer.committed == []
+
+
+@pytest.mark.asyncio
+async def test_an_unstocked_item_is_dead_lettered_without_spending_the_schedule(
+    db_session: AsyncSession,
+    sync_session: Session,
+    sync_session_factory: Callable[[], Session],
+) -> None:
+    # The factory always seeds an inventory row, so deleting it is how this test
+    # says "this item was never stocked at all" (design §4.6).
+    event = await make_confirmed_order_event(db_session, lines=[(100, 3)])
+    sync_session.execute(delete(Inventory))
+    sync_session.commit()
+
+    slept: list[float] = []
+    consumer = FakeConsumer()
+    producer = FakeProducer()
+    message = FakeMessage(json.dumps(event).encode())
+
+    handle_with_retry(
+        message,
+        session_factory=sync_session_factory,
+        consumer=consumer,
+        producer=producer,
+        processed_events=ProcessedEvent,
+        handler=handle_order_confirmed,
+        config=CONFIG,
+        sleep=slept.append,
+    )
+
+    assert slept == []
+    assert dict(producer.headers[0])["error_class"] == "PermanentFailure"
+    assert sync_session.scalars(select(Outbox)).all() == []
+    assert consumer.committed == [message]
