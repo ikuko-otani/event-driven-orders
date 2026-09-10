@@ -4,6 +4,7 @@ import json
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -315,3 +316,36 @@ async def test_the_dead_lettered_copy_carries_the_original_bytes_and_key(
     assert topic == CONFIG.dlq_topic
     assert value == message.body
     assert key == message.message_key
+
+
+@pytest.mark.asyncio
+async def test_the_dead_letter_headers_say_where_and_why_the_message_failed(
+    sync_session_factory: Callable[[], Session],
+) -> None:
+    consumer = FakeConsumer()
+    producer = FakeProducer()
+    message = _positioned(uuid.uuid4())
+
+    handle_with_retry(
+        message,
+        session_factory=sync_session_factory,
+        consumer=consumer,
+        producer=producer,
+        processed_events=ProcessedEvent,
+        handler=_failing_handler,
+        config=CONFIG,
+        sleep=lambda _: None,
+    )
+
+    diagnosis = dict(producer.headers[0])
+    failed_at = diagnosis.pop("failed_at")
+    assert diagnosis == {
+        "original_topic": "orders.events",
+        "original_partition": "7",
+        "original_offset": "4242",
+        "error_class": "RuntimeError",
+        "error_message": "the database went away",
+        "attempts": "5",
+        "consumer": "inventory-worker",
+    }
+    assert isinstance(failed_at, str) and datetime.fromisoformat(failed_at).tzinfo is not None
