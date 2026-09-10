@@ -3,6 +3,7 @@
 import json
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -31,6 +32,26 @@ def _message(event_id: uuid.UUID) -> FakeMessage:
         "payload": {},
     }
     return FakeMessage(json.dumps(body).encode())
+
+
+def _positioned(event_id: uuid.UUID) -> FakeMessage:
+    """One message that states where in the log it sat, and under which key.
+
+    The dead-letter headers are read back out of these fields, so leaving them
+    at their defaults would prove nothing: partition 0, offset 0 reads exactly
+    like a diagnosis that never filled them in.
+    """
+    return replace(
+        _message(event_id),
+        message_key=b"an-order-id",
+        message_partition=7,
+        message_offset=4242,
+    )
+
+
+def _failing_handler(session: Session, envelope: dict[str, Any]) -> None:
+    """A handler whose failure is technical, so the whole schedule runs before the DLQ."""
+    raise RuntimeError("the database went away")
 
 
 def _recording_handler(
@@ -269,3 +290,28 @@ async def test_a_message_that_is_not_json_goes_straight_to_the_dead_letter_topic
     assert slept == []
     assert producer.messages[0][0] == "orders.events.inventory-worker.dlq"
     assert consumer.committed == [message]
+
+
+@pytest.mark.asyncio
+async def test_the_dead_lettered_copy_carries_the_original_bytes_and_key(
+    sync_session_factory: Callable[[], Session],
+) -> None:
+    consumer = FakeConsumer()
+    producer = FakeProducer()
+    message = _positioned(uuid.uuid4())
+
+    handle_with_retry(
+        message,
+        session_factory=sync_session_factory,
+        consumer=consumer,
+        producer=producer,
+        processed_events=ProcessedEvent,
+        handler=_failing_handler,
+        config=CONFIG,
+        sleep=lambda _: None,
+    )
+
+    topic, key, value = producer.messages[0]
+    assert topic == CONFIG.dlq_topic
+    assert value == message.body
+    assert key == message.message_key
