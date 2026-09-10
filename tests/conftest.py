@@ -86,9 +86,7 @@ def redis_container() -> Generator[RedisContainer, None, None]:
 def configured_redis(redis_container: RedisContainer) -> str:
     """Point REDIS_* at the container, the same way migrated_database points DB_*."""
     os.environ["REDIS_HOST"] = redis_container.get_container_host_ip()
-    os.environ["REDIS_PORT"] = str(
-        redis_container.get_exposed_port(redis_container.port)
-    )
+    os.environ["REDIS_PORT"] = str(redis_container.get_exposed_port(redis_container.port))
     return RedisSettings().url
 
 
