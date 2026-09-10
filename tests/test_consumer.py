@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 import pytest
-from fakes import FakeConsumer, FakeMessage, FakeProducer
+from fakes import FakeConsumer, FakeDeliveryError, FakeMessage, FakeProducer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -349,3 +349,26 @@ async def test_the_dead_letter_headers_say_where_and_why_the_message_failed(
         "consumer": "inventory-worker",
     }
     assert isinstance(failed_at, str) and datetime.fromisoformat(failed_at).tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_a_dead_letter_the_broker_refused_leaves_the_offset_uncommitted(
+    sync_session_factory: Callable[[], Session],
+) -> None:
+    consumer = FakeConsumer()
+    message = _positioned(uuid.uuid4())
+    producer = FakeProducer(errors={message.message_key: FakeDeliveryError()})
+
+    with pytest.raises(RuntimeError, match="not acked"):
+        handle_with_retry(
+            message,
+            session_factory=sync_session_factory,
+            consumer=consumer,
+            producer=producer,
+            processed_events=ProcessedEvent,
+            handler=_failing_handler,
+            config=CONFIG,
+            sleep=lambda _: None,
+        )
+
+    assert consumer.committed == []
