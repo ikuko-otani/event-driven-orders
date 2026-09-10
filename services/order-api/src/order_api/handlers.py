@@ -19,7 +19,10 @@ logger = logging.getLogger(__name__)
 # Which inventory outcome moves the order where (design §5.7). The event names
 # are the wire contract, quoted rather than imported: order-api reads
 # inventory-worker's events, never its code (design §3.1).
-TRANSITIONS: dict[str, str] = {"InventoryReserved": "RESERVED"}
+TRANSITIONS: dict[str, str] = {
+    "InventoryReserved": "RESERVED",
+    "InventoryReservationFailed": "RESERVATION_FAILED",
+}
 
 
 def handle_inventory_event(session: Session, event: dict[str, Any]) -> None:

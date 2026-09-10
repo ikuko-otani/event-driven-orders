@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from common.consumer import Message
+from common.consumer import Headers, Message
 from common.poller import DeliveryCallback
 
 
@@ -28,18 +28,30 @@ class FakeProducer:
 
     def __init__(
         self,
-        errors: dict[str, FakeDeliveryError] | None = None,
+        errors: dict[str | bytes | None, FakeDeliveryError] | None = None,
         *,
         flushes_needed: int = 1,
     ) -> None:
-        self.errors: dict[str, FakeDeliveryError] = errors or {}
-        self.messages: list[tuple[str, str, bytes]] = []
+        self.errors: dict[str | bytes | None, FakeDeliveryError] = errors or {}
+        self.messages: list[tuple[str, str | bytes | None, bytes | None]] = []
+        self.headers: list[Headers] = []
         self.flush_calls = 0
         self._flushes_needed = flushes_needed
-        self._pending: list[tuple[str, DeliveryCallback]] = []
+        self._pending: list[tuple[str | bytes | None, DeliveryCallback]] = []
 
-    def produce(self, topic: str, *, key: str, value: bytes, on_delivery: DeliveryCallback) -> None:
+    def produce(
+        self,
+        topic: str,
+        *,
+        key: str | bytes | None,
+        value: bytes | None,
+        on_delivery: DeliveryCallback,
+        headers: Headers | None = None,
+    ) -> None:
         self.messages.append((topic, key, value))
+        # Kept beside the message rather than inside it, so the poller's
+        # three-part tuple keeps its shape; only the dead-letter path sends any.
+        self.headers.append(headers or [])
         self._pending.append((key, on_delivery))
 
     def flush(self, timeout: float) -> int:
@@ -60,11 +72,31 @@ class FakeMessage:
     body: bytes
     broker_error: str | None = None
 
+    # A field cannot share its name with the method that returns it, so the
+    # position fields carry a prefix. The defaults stand in for an ordinary
+    # message; a test asserting on dead-letter headers sets them.
+    message_key: bytes | None = None
+    message_topic: str = "orders.events"
+    message_partition: int = 0
+    message_offset: int = 0
+
     def value(self) -> bytes | None:
         return self.body
 
     def error(self) -> object | None:
         return self.broker_error
+
+    def key(self) -> bytes | None:
+        return self.message_key
+
+    def topic(self) -> str | None:
+        return self.message_topic
+
+    def partition(self) -> int | None:
+        return self.message_partition
+
+    def offset(self) -> int | None:
+        return self.message_offset
 
 
 class FakeConsumer:

@@ -143,17 +143,21 @@ def make_redelivery(event: dict[str, Any]) -> dict[str, Any]:
     return {**event, "event_id": str(uuid4())}
 
 
-async def make_inventory_reserved_event(
+async def make_inventory_reply_event(
     session: AsyncSession,
     sync_session: Session,
     *,
     lines: Sequence[tuple[int, int]] = ((100, 3),),
 ) -> dict[str, Any]:
-    """Replay confirm → reserve, and return the InventoryReserved that came back.
+    """Replay confirm → reserve, and return whichever reply the worker announced.
 
-    The event is produced by running the real reservation handler rather than
-    assembled by hand: order-api's consumer must be tested against the bytes
-    the other service actually publishes (design §1).
+    Which of the two replies comes back is decided by the numbers in lines,
+    never by the caller: stock that covers the order produces
+    InventoryReserved, stock that falls short produces
+    InventoryReservationFailed. Either way the event is produced by running
+    the real reservation handler rather than assembled by hand, so order-api's
+    consumer is tested against the bytes the other service actually publishes
+    (design §1).
     """
     # Two sessions on purpose: the order is seeded through the async engine the
     # API uses, and the worker's handler is synchronous, as its process is.

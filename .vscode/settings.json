@@ -1,0 +1,23 @@
+{
+  // Ruff is this repository's only formatter: pyproject.toml sets
+  // line-length = 100, and the CI gate is `ruff format --check`.
+  // Black's default of 88 disagrees with it on any line 89-100 wide.
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.rulers": [100],
+    "editor.tabSize": 4,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports.ruff": "explicit"
+    }
+  },
+
+  // Import order is Ruff's I001 rule, so no other sorter may run on save.
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "never"
+  },
+
+  // Pylance reads the workspace virtualenv, so cross-package imports resolve
+  // against the interpreter .python-version pins, not a global Python.
+  "python.defaultInterpreterPath": ".venv\\Scripts\\python.exe"
+}

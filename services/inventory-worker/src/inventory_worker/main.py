@@ -9,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from common.consumer import ConsumerConfig, run_forever
-from common.kafka import build_consumer
+from common.kafka import build_consumer, build_producer
 from common.settings import DatabaseSettings, KafkaSettings
 from inventory_worker.handlers import handle_order_confirmed
 from inventory_worker.models import ProcessedEvent
@@ -31,6 +31,7 @@ def run() -> None:
     run_forever(
         sessionmaker(engine),
         consumer=build_consumer(KafkaSettings(), CONFIG),
+        producer=build_producer(KafkaSettings()),
         processed_events=ProcessedEvent,
         handler=handle_order_confirmed,
         config=CONFIG,
