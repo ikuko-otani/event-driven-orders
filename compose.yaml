@@ -57,17 +57,19 @@ services:
     # count later changes the key -> partition mapping, which breaks the
     # per-order ordering of §4.2. --if-not-exists keeps a repeated `up`
     # from failing and blocking the poller that waits on this.
+    #
+    # The dead-letter topics are a second command because their settings differ
+    # (design §5.6): 14-day retention, so a message cannot expire while an
+    # incident is still being worked, and one partition, since re-injection
+    # republishes to the original topic and DLQ order is only ever read by hand.
     entrypoint:
-      - rpk
-      - topic
-      - create
-      - orders.events
-      - inventory.events
-      - -p
-      - "12"
-      - --if-not-exists
-      - -X
-      - brokers=redpanda:9092
+      - /bin/sh
+      - -c
+      - |
+        rpk topic create orders.events inventory.events \
+          -p 12 --if-not-exists -X brokers=redpanda:9092 &&
+        rpk topic create orders.events.inventory-worker.dlq inventory.events.order-api.dlq \
+          -p 1 -c retention.ms=1209600000 --if-not-exists -X brokers=redpanda:9092
 
   redis:
     image: redis:8.10.1-alpine
