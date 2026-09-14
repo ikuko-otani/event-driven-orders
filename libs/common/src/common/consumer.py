@@ -7,7 +7,6 @@ purpose — the Kafka consumer blocks, exactly as the producer does.
 """
 
 import json
-import logging
 import random
 import time
 import uuid
@@ -16,12 +15,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
+import structlog
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from common.messaging import ProcessedEventMixin
 
-logger = logging.getLogger(__name__)
+logger = structlog.stdlib.get_logger(__name__)
 
 # Header values go on the wire as bytes, and the client encodes a str for us.
 # The type is spelled exactly as confluent-kafka spells it: list is invariant,
@@ -202,12 +202,10 @@ def dead_letter(
     # leaves the failure invisible until someone thinks to look.
     logger.error(
         "event_dead_lettered",
-        extra={
-            "dlq_topic": config.dlq_topic,
-            "consumer": config.group_id,
-            "attempts": attempts,
-            "error_class": type(error).__name__,
-        },
+        dlq_topic=config.dlq_topic,
+        consumer=config.group_id,
+        attempts=attempts,
+        error_class=type(error).__name__,
     )
     consumer.commit(message=message, asynchronous=False)
 
