@@ -11,13 +11,17 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
+import structlog
 from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
 from common.envelope import envelope
 from common.messaging import OutboxMixin
+
+logger = structlog.stdlib.get_logger(__name__)
 
 
 class DeliveryError(Protocol):
@@ -103,6 +107,17 @@ def publish_batch(
 
     if acked:
         session.execute(update(outbox).where(outbox.id.in_(acked)).values(published_at=func.now()))
+
+        # How long the batch's oldest row had been waiting: design §6.4's
+        # backlog-age signal, which a depth count on its own misses.
+        age = datetime.now(UTC) - rows[0].created_at
+        logger.info(
+            "outbox_batch_published",
+            topic=config.topic,
+            published=len(acked),
+            selected=len(rows),
+            oldest_age_ms=round(age.total_seconds() * 1000),
+        )
     if failed:
         permanent = [row_id for row_id, error in failed if not error.retriable()]
         session.execute(
@@ -120,6 +135,16 @@ def publish_batch(
                 ),
             )
         )
+
+        # Quarantined rows leave the poller's sight for good, so the count that
+        # went is the one signal that they did (design §5.7).
+        logger.warning(
+            "outbox_publish_failed",
+            topic=config.topic,
+            failed=len(failed),
+            permanent=len(permanent),
+        )
+
     session.commit()
     return len(rows)
 
