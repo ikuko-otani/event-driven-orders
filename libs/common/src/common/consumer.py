@@ -272,6 +272,20 @@ def handle_message(
         if claimed:
             handler(session, envelope)
         session.commit()
+
+    # One line per message, so a working consumer is visible at all, and a
+    # redelivery says so: processed_events absorbs duplicates silently by
+    # design, which leaves no other record that one arrived (design §3.2).
+    logger.info(
+        "event_handled",
+        event_type=envelope["event_type"],
+        event_id=envelope["event_id"],
+        duplicate=not claimed,
+        topic=message.topic(),
+        partition=message.partition(),
+        offset=message.offset(),
+    )
+
     consumer.commit(message=message, asynchronous=False)
 
 
