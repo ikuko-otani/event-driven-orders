@@ -10,15 +10,32 @@ write through the standard library, so there is no second stream to search.
 import logging
 
 import structlog
-from structlog.typing import Processor
+from structlog.typing import EventDict, Processor, WrappedLogger
 
-# What every line carries, whichever library wrote it. Bound context comes
-# first so a field bound once at start-up reaches lines written long after.
+# What every line carries, whichever library wrote it. merge_contextvars runs
+# first so that anything bound for the work in hand is already in the dict the
+# processors after it read.
 SHARED: list[Processor] = [
     structlog.contextvars.merge_contextvars,
     structlog.processors.add_log_level,
     structlog.processors.TimeStamper(fmt="iso", utc=True),
 ]
+
+
+def _stamp_service(service: str) -> Processor:
+    """Build the processor that names this process on every line.
+
+    A processor, not a bound context variable: five processes write to one
+    stream in compose, and the name has to reach lines written from any task,
+    including the ones uvicorn logs outside the context the pipeline was
+    installed in.
+    """
+
+    def stamp(_logger: WrappedLogger, _method: str, event: EventDict) -> EventDict:
+        event["service"] = service
+        return event
+
+    return stamp
 
 
 def configure(service: str) -> None:
@@ -28,13 +45,18 @@ def configure(service: str) -> None:
     by whatever default was still in place, and arrives as text in the middle
     of a JSON stream.
     """
+
+    # The process name is fixed for this process, so it joins the shared list
+    # once here rather than being bound and merged per line.
+    shared: list[Processor] = [_stamp_service(service), *SHARED]
+
     # One handler renders both sources: structlog's own events, and the records
     # libraries emit through the standard library. foreign_pre_chain is how a
     # library's record picks up the shared fields it never asked for.
     handler = logging.StreamHandler()
     handler.setFormatter(
         structlog.stdlib.ProcessorFormatter(
-            foreign_pre_chain=SHARED,
+            foreign_pre_chain=shared,
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
                 structlog.processors.format_exc_info,
@@ -53,15 +75,10 @@ def configure(service: str) -> None:
     # handler above instead of rendering it, which is what puts both sources
     # through one renderer.
     structlog.configure(
-        processors=[*SHARED, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        processors=[*shared, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
-
-    # Bound once and merged into every later line: five processes write to one
-    # stream in compose, so a line that cannot say which one wrote it is close
-    # to unusable.
-    structlog.contextvars.bind_contextvars(service=service)
 
 
 def adopt_loggers(*names: str) -> None:
