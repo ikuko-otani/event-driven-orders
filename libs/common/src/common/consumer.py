@@ -337,7 +337,23 @@ def handle_with_retry(
                     attempts=attempt,
                 )
                 return
-            sleep(_backoff(attempt, base=config.retry_base))
+
+            # A retry that says nothing is indistinguishable from a consumer
+            # that has hung: these lines are the whole of what an operator sees
+            # while the schedule runs (design §5.5).
+            wait = _backoff(attempt, base=config.retry_base)
+            logger.warning(
+                "event_handle_failed",
+                topic=message.topic(),
+                partition=message.partition(),
+                offset=message.offset(),
+                attempt=attempt,
+                max_attempts=config.max_attempts,
+                retry_in=round(wait, 3),
+                error_class=type(error).__name__,
+                error_message=str(error),
+            )
+            sleep(wait)
 
 
 def run_forever(
