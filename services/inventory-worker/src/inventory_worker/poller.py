@@ -9,6 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from common.kafka import build_producer
+from common.observability import configure
 from common.poller import PollerConfig, run_forever
 from common.settings import DatabaseSettings, KafkaSettings
 from inventory_worker.models import Outbox
@@ -18,6 +19,7 @@ TOPIC = "inventory.events"
 
 def run() -> None:
     """Publish this service's outbox rows until the process is stopped."""
+    configure("inventory-worker-poller")
     engine = create_engine(DatabaseSettings().sync_url)
     run_forever(
         sessionmaker(engine),

@@ -62,3 +62,19 @@ def configure(service: str) -> None:
     # stream in compose, so a line that cannot say which one wrote it is close
     # to unusable.
     structlog.contextvars.bind_contextvars(service=service)
+
+
+def adopt_loggers(*names: str) -> None:
+    """Hand a library's own loggers to the root, so its lines join the pipeline.
+
+    A library that installs handlers of its own and turns off propagation —
+    uvicorn does both — keeps writing in its own format from its own stream,
+    which is the second pipeline §6.6 exists to prevent. Emptying its handlers
+    leaves it with nothing to write to but the root logger configured above.
+    """
+    # Both halves are needed: a handler left in place would print the line a
+    # second time, and propagation left off would stop it reaching the root.
+    for name in names:
+        adopted = logging.getLogger(name)
+        adopted.handlers = []
+        adopted.propagate = True

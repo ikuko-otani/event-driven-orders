@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from common.consumer import ConsumerConfig, run_forever
 from common.kafka import build_consumer, build_producer
+from common.observability import configure
 from common.settings import DatabaseSettings, KafkaSettings
 from inventory_worker.handlers import handle_order_confirmed
 from inventory_worker.models import ProcessedEvent
@@ -27,6 +28,7 @@ def run() -> None:
     per message, so a message that fails rolls back on its own and its
     redelivery starts from a clean transaction (design §5.2).
     """
+    configure("inventory-worker")
     engine = create_engine(DatabaseSettings().sync_url)
     run_forever(
         sessionmaker(engine),

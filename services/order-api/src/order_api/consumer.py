@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from common.consumer import ConsumerConfig, run_forever
 from common.kafka import build_consumer, build_producer
+from common.observability import configure
 from common.settings import DatabaseSettings, KafkaSettings
 from order_api.handlers import handle_inventory_event
 from order_api.models import ProcessedEvent
@@ -27,6 +28,7 @@ def run() -> None:
     Kafka client blocks, so an async session here would buy nothing and would
     leave two engine configurations to keep in agreement (design §5.2).
     """
+    configure("order-api-consumer")
     engine = create_engine(DatabaseSettings().sync_url)
     run_forever(
         sessionmaker(engine),
