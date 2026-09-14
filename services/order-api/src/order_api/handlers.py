@@ -5,16 +5,16 @@ blocks on the broker exactly as the poller does, so it takes a synchronous
 Session and never touches the async engine the HTTP service uses.
 """
 
-import logging
 import uuid
 from typing import Any
 
+import structlog
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from order_api.models import Order
 
-logger = logging.getLogger(__name__)
+logger = structlog.stdlib.get_logger(__name__)
 
 # Which inventory outcome moves the order where (design §5.7). The event names
 # are the wire contract, quoted rather than imported: order-api reads
@@ -59,8 +59,6 @@ def handle_inventory_event(session: Session, event: dict[str, Any]) -> None:
     if result.first() is None:
         logger.warning(
             "order_state_mismatch",
-            extra={
-                "event_type": event["event_type"],
-                "order_id": event["payload"]["order_id"],
-            },
+            event_type=event["event_type"],
+            order_id=event["payload"]["order_id"],
         )
