@@ -81,6 +81,16 @@ services:
       timeout: 3s
       retries: 10
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    # No healthcheck, and nothing below depends on this one: tracing is
+    # observability, never a load-bearing dependency (design §2). A process
+    # must start and keep working even if Jaeger is slow to come up or is not
+    # running at all — the exporter just has nothing to send to yet.
+    ports:
+      - "16686:16686" # UI
+      - "4318:4318" # OTLP/HTTP receiver
+
   api:
     build:
       context: .
@@ -88,6 +98,7 @@ services:
     environment:
       DB_HOST: postgres
       REDIS_HOST: redis
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     ports:
       - "8000:8000"
     depends_on:
@@ -128,6 +139,7 @@ services:
     environment:
       DB_HOST: postgres
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     depends_on:
       postgres:
         condition: service_healthy
@@ -154,6 +166,7 @@ services:
     environment:
       DB_HOST: postgres
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     depends_on:
       postgres:
         condition: service_healthy
@@ -170,6 +183,7 @@ services:
     environment:
       DB_HOST: postgres
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     depends_on:
       postgres:
         condition: service_healthy
@@ -194,6 +208,7 @@ services:
     environment:
       DB_HOST: postgres
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     depends_on:
       postgres:
         condition: service_healthy

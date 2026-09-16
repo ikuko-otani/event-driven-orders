@@ -12,12 +12,15 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from opentelemetry import trace
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from common.consumer import PermanentFailure
 from inventory_worker.models import Inventory, InventoryReservation
+
+tracer = trace.get_tracer(__name__)
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,7 @@ def _already_reserved(session: Session, *, order_id: uuid.UUID) -> bool:
     return held is not None
 
 
+@tracer.start_as_current_span("inventory.reserve")
 def reserve_order(session: Session, event: dict[str, Any]) -> ReservationOutcome:
     """Reserve every line of one OrderConfirmed, or leave the stock untouched.
 

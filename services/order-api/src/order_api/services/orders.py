@@ -6,6 +6,7 @@ from collections import Counter
 from collections.abc import Sequence
 
 from fastapi import HTTPException
+from opentelemetry import trace
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,7 @@ from order_api.models import Customer, Item, Order, OrderLine
 from order_api.schemas.orders import OrderCreate, OrderLineCreate, OrderUpdate
 
 IDEMPOTENCY_KEY_CONSTRAINT = "uq_orders_entity_id_idempotency_key"
+tracer = trace.get_tracer(__name__)
 
 
 async def next_order_number(session: AsyncSession) -> str:
@@ -198,20 +200,23 @@ async def confirm_order(
     carrying distinct event_ids, the one duplicate processed_events cannot
     absorb (design §5.7).
     """
-    result = await session.execute(
-        update(Order)
-        .where(
-            Order.id == order_id,
-            Order.entity_id == entity_id,
-            Order.status == "PENDING",
+    with tracer.start_as_current_span("order.confirm") as span:
+        span.set_attribute("order.id", str(order_id))
+        result = await session.execute(
+            update(Order)
+            .where(
+                Order.id == order_id,
+                Order.entity_id == entity_id,
+                Order.status == "PENDING",
+            )
+            .values(status="CONFIRMED")
+            .returning(Order.id)
+            .execution_options(synchronize_session=False)
         )
-        .values(status="CONFIRMED")
-        .returning(Order.id)
-        .execution_options(synchronize_session=False)
-    )
-    transitioned = result.scalar_one_or_none() is not None
+        transitioned = result.scalar_one_or_none() is not None
+        span.set_attribute("order.transitioned", transitioned)
 
-    order = await get_order(session, entity_id=entity_id, order_id=order_id)
-    if transitioned:
-        session.add(order_confirmed_outbox(order))
-    return order
+        order = await get_order(session, entity_id=entity_id, order_id=order_id)
+        if transitioned:
+            session.add(order_confirmed_outbox(order))
+        return order

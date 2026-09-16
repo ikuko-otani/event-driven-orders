@@ -7,7 +7,6 @@ purpose — the Kafka consumer blocks, exactly as the producer does.
 """
 
 import json
-import logging
 import random
 import time
 import uuid
@@ -16,12 +15,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
+import structlog
+from opentelemetry import trace
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from common.messaging import ProcessedEventMixin
 
-logger = logging.getLogger(__name__)
+logger = structlog.stdlib.get_logger(__name__)
+tracer = trace.get_tracer(__name__)
 
 # Header values go on the wire as bytes, and the client encodes a str for us.
 # The type is spelled exactly as confluent-kafka spells it: list is invariant,
@@ -202,12 +204,10 @@ def dead_letter(
     # leaves the failure invisible until someone thinks to look.
     logger.error(
         "event_dead_lettered",
-        extra={
-            "dlq_topic": config.dlq_topic,
-            "consumer": config.group_id,
-            "attempts": attempts,
-            "error_class": type(error).__name__,
-        },
+        dlq_topic=config.dlq_topic,
+        consumer=config.group_id,
+        attempts=attempts,
+        error_class=type(error).__name__,
     )
     consumer.commit(message=message, asynchronous=False)
 
@@ -237,6 +237,7 @@ def _claim(
     return result.first() is not None
 
 
+@tracer.start_as_current_span("event.handle")
 def handle_message(
     message: Message,
     *,
@@ -264,6 +265,12 @@ def handle_message(
     except json.JSONDecodeError as error:
         raise PermanentFailure(f"the message is not JSON: {error}") from error
 
+    # Name the message on the span itself: a trace opened from Jaeger then says
+    # what was being handled, without having to find the log line first.
+    span = trace.get_current_span()
+    span.set_attribute("event.type", envelope["event_type"])
+    span.set_attribute("event.id", envelope["event_id"])
+
     with session_factory() as session:
         claimed = _claim(
             session,
@@ -274,6 +281,20 @@ def handle_message(
         if claimed:
             handler(session, envelope)
         session.commit()
+
+    # One line per message, so a working consumer is visible at all, and a
+    # redelivery says so: processed_events absorbs duplicates silently by
+    # design, which leaves no other record that one arrived (design §3.2).
+    logger.info(
+        "event_handled",
+        event_type=envelope["event_type"],
+        event_id=envelope["event_id"],
+        duplicate=not claimed,
+        topic=message.topic(),
+        partition=message.partition(),
+        offset=message.offset(),
+    )
+
     consumer.commit(message=message, asynchronous=False)
 
 
@@ -339,7 +360,23 @@ def handle_with_retry(
                     attempts=attempt,
                 )
                 return
-            sleep(_backoff(attempt, base=config.retry_base))
+
+            # A retry that says nothing is indistinguishable from a consumer
+            # that has hung: these lines are the whole of what an operator sees
+            # while the schedule runs (design §5.5).
+            wait = _backoff(attempt, base=config.retry_base)
+            logger.warning(
+                "event_handle_failed",
+                topic=message.topic(),
+                partition=message.partition(),
+                offset=message.offset(),
+                attempt=attempt,
+                max_attempts=config.max_attempts,
+                retry_in=round(wait, 3),
+                error_class=type(error).__name__,
+                error_message=str(error),
+            )
+            sleep(wait)
 
 
 def run_forever(
