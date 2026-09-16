@@ -9,6 +9,18 @@ An entry is closed by a commit that removes the gap, not by deciding to remove i
 | TD-002 | No engine validates a pooled connection before use | Open |
 | TD-003 | A poller that exits is never restarted | Open |
 | TD-004 | A trace stops at the broker, so one order's work is several traces | Open |
+| TD-005 | A write endpoint answers before its transaction commits, and caches the answer first | Open |
+| TD-006 | The poller treats every failed send as permanent, so a broker outage quarantines healthy rows | Open |
+| TD-007 | `docker compose up` on a fresh volume starts the pollers before any schema exists | Open |
+| TD-008 | An oversized outbox row raises inside `produce()` and stops the poller | Open |
+| TD-009 | A message that is JSON but not an envelope is retried as a technical failure | Open |
+| TD-010 | No test runs two confirms, or two reservations of one item, concurrently | Open |
+| TD-011 | The inventory consumer reserves stock for any event type on its topic | Open |
+| TD-012 | Tests that assert on log lines depend on a fixture in another file having run first | Open |
+| TD-013 | The dead-letter and quarantine log lines do not say which message or row failed | Open |
+| TD-014 | Two things the design describes do not exist: `DELETE /orders/{id}` and the re-injection script | Open |
+| TD-015 | No process handles SIGTERM, so a stop waits ten seconds and ends in SIGKILL | Open |
+| TD-016 | No test drives one order through both relays and both consumers | Open |
 
 ---
 
@@ -115,3 +127,270 @@ Correlating them by hand is possible through the log lines, since every line car
 A field on the envelope carrying W3C trace context, a column on both outbox tables to persist it, and one Alembic migration per service.
 The consumer then continues the trace it is handed instead of starting one, and the poller passes the value through without reading it, which is the only role the design gives it.
 This is deliberately deferred: the design names observability as a reduction candidate and settles on structured logging, so the connected trace is an addition to that decision rather than a gap in it.
+
+---
+
+## TD-005: A write endpoint answers before its transaction commits, and caches the answer first
+
+**Status**: Open.
+**Identified**: 2026-09-16, during an adversarial review of the implementation.
+
+### What is missing
+
+`get_session` commits after the request handler returns, and FastAPI runs that exit code after the response has been sent.
+`POST /orders` also writes its response into the Redis cache before the commit runs.
+Nothing in the request path commits before the client is answered.
+
+### How it fails
+
+With a deferred constraint made to fail at commit, a client received `201 Created`, the database held no order, and the cache held the phantom response for 24 hours.
+A retry with the same idempotency key was answered `200` from the cache with an order id that `GET /orders/{id}` reports as `404`.
+The confirm endpoint has the same shape: `200` leaves before the `PENDING → CONFIRMED` transition and its outbox row are durable, which is the opposite of what design §4.6 argues when it chooses `200` over `202`.
+
+### What closing it takes
+
+An explicit `await session.commit()` in each write route before it returns, with the cache write moved after it.
+`get_session` then guarantees rollback only.
+One test that fails the commit and asserts a 5xx, an empty cache, and a successful retry.
+
+---
+
+## TD-006: The poller treats every failed send as permanent, so a broker outage quarantines healthy rows
+
+**Status**: Open.
+**Identified**: 2026-09-16, during an adversarial review of the implementation.
+
+### What is missing
+
+`publish_batch` classifies a failed send with `error.retriable()`.
+The error object the real client hands to a delivery callback never sets that flag, so it is `False` for every failure, a timed-out send included.
+
+### How it fails
+
+With the broker stopped for longer than `message.timeout.ms`, every row in the batch was quarantined on its first failure and logged as permanent.
+Once the broker was back, the rows stayed quarantined and their orders stayed `CONFIRMED`.
+The retry-on-the-next-cycle path of design §5.4 never runs, and the six unit tests that cover it pass only because the fake producer can report a retriable error that the real one cannot.
+
+### What closing it takes
+
+Classify by error code rather than by the flag: a short list of permanent codes, everything else transient and bounded by `max_attempts`.
+One test against a real producer pointed at an unreachable address, asserting that the row is not quarantined after one failure.
+The decision belongs in `common/kafka.py`, the one module that knows the client's constants.
+
+---
+
+## TD-007: `docker compose up` on a fresh volume starts the pollers before any schema exists
+
+**Status**: Open.
+**Identified**: 2026-09-16, during an adversarial review of the implementation.
+
+### What is missing
+
+`compose.yaml` has no service that applies the two Alembic histories.
+The application processes wait only for the database to be healthy, and the migration and seed tasks run on the host by hand.
+
+### How it fails
+
+On a fresh clone, `docker compose up -d` leaves both pollers in `Exited (1)` on `UndefinedTable`, while the HTTP service reports healthy and answers `500` to any write.
+The single-command start this stack promises does not hold for the first start, which is the one a new reader performs.
+
+### What closing it takes
+
+A one-shot `migrate` service on the service image, running both histories, that every application process waits on with `service_completed_successfully`.
+A restart policy on the application services, so a poller that loses the race is started again rather than left down.
+
+---
+
+## TD-008: An oversized outbox row raises inside `produce()` and stops the poller
+
+**Status**: Open.
+**Identified**: 2026-09-16, during an adversarial review of the implementation.
+
+### What is missing
+
+The client rejects a message over its size limit synchronously, from `produce()`, not through the delivery callback.
+`publish_batch` catches nothing around `produce()`, and neither does the loop above it.
+
+### How it fails
+
+A 2 MB value raised `KafkaException(MSG_SIZE_TOO_LARGE)` before any callback ran, which ends the poller process.
+On restart the same row is selected first and the process ends again.
+The line cap on `POST /orders` keeps a legitimate order far below the limit, so today this needs a hand-written row; the containment the design promises in §5.7 is nevertheless absent.
+
+### What closing it takes
+
+A `try` around `produce()` that records the row as a permanent failure, sharing the classification of TD-006.
+A fake producer entry that raises on `produce()`, and one test.
+
+---
+
+## TD-009: A message that is JSON but not an envelope is retried as a technical failure
+
+**Status**: Open.
+**Identified**: 2026-09-16, during an adversarial review of the implementation.
+
+### What is missing
+
+Only a failure of `json.loads` is treated as permanent.
+A document that parses but lacks `event_type` or `event_id`, or whose `event_id` is not a UUID, or that is a list or a string, raises a plain `KeyError`, `ValueError` or `TypeError`.
+
+### How it fails
+
+Each of those shapes ran the full schedule: four waits and five attempts before the dead-letter copy, with `KeyError` as the recorded error class.
+The partition is blocked for up to fifteen seconds to reach an outcome that was certain on the first attempt.
+
+### What closing it takes
+
+A shape check straight after parsing that raises `PermanentFailure`, and one parametrized test case per shape alongside the existing not-JSON test.
+
+---
+
+## TD-010: No test runs two confirms, or two reservations of one item, concurrently
+
+**Status**: Open.
+**Identified**: 2026-09-16, during an adversarial review of the implementation.
+
+### What is missing
+
+The confirm tests call the endpoint twice in sequence, which a read-then-write implementation would also pass.
+The reservation test observes a held lock with `NOWAIT` rather than letting two orders compete for the same unit.
+
+### How it fails
+
+The conditional `UPDATE` that closes the double-confirm path, and the row lock that serialises reservations, are the two mechanisms the design leans on hardest, and the suite would stay green if either were replaced by a read-then-write.
+Both were exercised by hand during the review and held; the suite does not say so.
+
+### What closing it takes
+
+Ten concurrent confirms of one `PENDING` order through the ASGI client, asserting one outbox row.
+Two reservations of the last unit of one item on two threads, asserting one `Reserved` and one `Insufficient`.
+
+---
+
+## TD-011: The inventory consumer reserves stock for any event type on its topic
+
+**Status**: Open.
+**Identified**: 2026-09-16, during an adversarial review of the implementation.
+
+### What is missing
+
+`handle_order_confirmed` never reads `event_type`.
+The order-api consumer dispatches on it and ignores what it has no transition for; the inventory consumer has no such guard.
+
+### How it fails
+
+An envelope with `event_type` set to `OrderCancelled` and an `OrderConfirmed` payload reserved the order's stock.
+Nothing produces such an event today, but the design reserves that name for the same topic, and the first event added there would be reserved as if it were a confirmation.
+
+### What closing it takes
+
+One early return on the event type, and the test above.
+
+---
+
+## TD-012: Tests that assert on log lines depend on a fixture in another file having run first
+
+**Status**: Open.
+**Identified**: 2026-09-16, during an adversarial review of the implementation.
+
+### What is missing
+
+Nothing in the test session configures the logging pipeline.
+It is configured as a side effect of the HTTP client fixture's lifespan, in tests that happen to sort earlier.
+
+### How it fails
+
+`pytest tests/test_order_reservation_events.py -k unknown_order` fails on its own: the warning goes to the unconfigured default logger, and `caplog` captures nothing.
+The sibling assertion that no warning was logged passes for the same reason, without checking anything.
+
+### What closing it takes
+
+A session-scoped, autouse fixture that installs the pipeline once, or `structlog.testing.capture_logs()` in place of `caplog`, as the observability tests already do.
+
+---
+
+## TD-013: The dead-letter and quarantine log lines do not say which message or row failed
+
+**Status**: Open.
+**Identified**: 2026-09-16, during an adversarial review of the implementation.
+
+### What is missing
+
+`event_dead_lettered` carries the topic it went to, the consumer, the attempt count and the error class, but not the source topic, partition and offset, nor the event id.
+`outbox_publish_failed` carries two counts and no row id or error code.
+
+### How it fails
+
+An operator reading the log knows that something was dead-lettered or quarantined and nothing about what.
+The recovery step of design §5.7 asks them to inspect "the error the poller logged for it", and no such line exists.
+
+### What closing it takes
+
+The message position and, where the envelope parsed, its id on the dead-letter line.
+One line per quarantined row, with its id and the broker's error name, on the poller.
+
+---
+
+## TD-014: Two things the design describes do not exist: `DELETE /orders/{id}` and the re-injection script
+
+**Status**: Open.
+**Identified**: 2026-09-16, during an adversarial review of the implementation.
+
+### What is missing
+
+Design §4.6 catalogues `DELETE` and `PUT` on an order; the router has neither.
+Design §5.6 describes a script that reads the dead-letter topic and republishes selected messages to their original topic; `scripts/` holds the seed script only.
+
+### How it fails
+
+A reader following the state × operation table gets `405` for a documented cell.
+A dead-lettered order can only be recovered with hand-typed broker commands, and two such messages have been waiting since the failure paths were first exercised.
+
+### What closing it takes
+
+`DELETE` in the shape of `PATCH`: a locking read, `409` outside `PENDING`, `204` on success.
+A small script that consumes the dead-letter topic and republishes by original key and topic, selectable by event id.
+If the script is not built, design §5.6 should say what the manual procedure is instead.
+
+---
+
+## TD-015: No process handles SIGTERM, so a stop waits ten seconds and ends in SIGKILL
+
+**Status**: Open.
+**Identified**: 2026-09-11, while stopping the stack after exercising the failure paths; registered 2026-09-16.
+
+### What is missing
+
+Both `run_forever` loops run until an exception ends them.
+Nothing turns a termination signal into a request to finish the current unit of work and leave.
+
+### How it fails
+
+`docker compose stop` waits its grace period on every application container and then kills it; the exit codes on record are `143` and `137`.
+Correctness survives, because publish-before-mark and claim-before-commit already assume abrupt death.
+What is lost is the spans still queued in the batch exporter, the consumer's group departure (its partitions stay assigned until the session times out), and ten seconds on every stop.
+
+### What closing it takes
+
+A signal handler that sets a flag, a loop condition that reads it, and `close()` on the consumer on the way out.
+
+---
+
+## TD-016: No test drives one order through both relays and both consumers
+
+**Status**: Open.
+**Identified**: 2026-09-16, during an adversarial review of the implementation.
+
+### What is missing
+
+The broker-backed tests cover one hop each: outbox to topic, and topic to handler.
+No test confirms an order and asserts that it reaches `RESERVED` through the real poller, the real consumer loop, the second outbox and the second consumer.
+
+### How it fails
+
+The end-to-end path was verified by hand against a running stack during the review and worked in under a second.
+The suite that gates every merge does not exercise it, although the design names event-replay integration tests as the mitigation for the relay being first-party code.
+
+### What closing it takes
+
+One test that calls each stage once, in order, against the Redpanda container the fixtures already start: confirm through the API, `publish_batch`, one `handle_with_retry` on each side, `publish_batch` again, then `GET /orders/{id}`.
