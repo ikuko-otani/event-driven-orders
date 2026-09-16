@@ -19,11 +19,29 @@ from structlog.typing import EventDict, Processor, WrappedLogger
 
 from common.settings import TracingSettings
 
+
+def _stamp_trace(_logger: WrappedLogger, _method: str, event: EventDict) -> EventDict:
+    """Put the span a line was written inside onto the line itself.
+
+    Read at the moment of the call, never bound ahead of it: the current span
+    changes many times within one process, and a value bound for one of them
+    would still be sitting there for the next. A context that is not valid
+    means the line was written outside any span, and it carries no trace
+    fields at all rather than empty ones.
+    """
+    context = trace.get_current_span().get_span_context()
+    if context.is_valid:
+        event["trace_id"] = trace.format_trace_id(context.trace_id)
+        event["span_id"] = trace.format_span_id(context.span_id)
+    return event
+
+
 # What every line carries, whichever library wrote it. merge_contextvars runs
 # first so that anything bound for the work in hand is already in the dict the
 # processors after it read.
 SHARED: list[Processor] = [
     structlog.contextvars.merge_contextvars,
+    _stamp_trace,
     structlog.processors.add_log_level,
     structlog.processors.TimeStamper(fmt="iso", utc=True),
 ]
