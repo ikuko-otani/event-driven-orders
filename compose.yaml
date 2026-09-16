@@ -82,7 +82,7 @@ services:
       retries: 10
 
   jaeger:
-    image: jaegertracing/all-in-one:1.63
+    image: jaegertracing/all-in-one:1.76.0
     # No healthcheck, and nothing below depends on this one: tracing is
     # observability, never a load-bearing dependency (design §2). A process
     # must start and keep working even if Jaeger is slow to come up or is not
