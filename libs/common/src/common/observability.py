@@ -10,7 +10,14 @@ write through the standard library, so there is no second stream to search.
 import logging
 
 import structlog
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from structlog.typing import EventDict, Processor, WrappedLogger
+
+from common.settings import TracingSettings
 
 # What every line carries, whichever library wrote it. merge_contextvars runs
 # first so that anything bound for the work in hand is already in the dict the
@@ -38,8 +45,33 @@ def _stamp_service(service: str) -> Processor:
     return stamp
 
 
+def _configure_tracing(service: str) -> None:
+    """Give this process a tracer, and its spans somewhere to go (design §2).
+
+    The provider is installed whether or not there is a collector: a span
+    still gets a trace id that way, which is what the log lines carry. Only
+    the export is conditional.
+    """
+    # service.name is what Jaeger groups traces by, so it is given the same
+    # name the log lines are stamped with — one word finds a process in both.
+    provider = TracerProvider(resource=Resource.create({"service.name": service}))
+
+    # Batched, so no span makes the work that created it wait for an HTTP round
+    # trip. Attached only when an endpoint exists, since an absent collector
+    # would otherwise be retried on every batch.
+    endpoint = TracingSettings().exporter_otlp_endpoint
+    if endpoint:
+        # /v1/traces is appended here: the SDK appends it only when it reads
+        # the variable itself, and takes a constructor argument verbatim.
+        provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"))
+        )
+
+    trace.set_tracer_provider(provider)
+
+
 def configure(service: str) -> None:
-    """Install the JSON pipeline for this process, before anything else logs.
+    """Install this process's logging and tracing, before anything else logs.
 
     Every entrypoint calls this first: a line written beforehand is formatted
     by whatever default was still in place, and arrives as text in the middle
@@ -79,6 +111,10 @@ def configure(service: str) -> None:
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
+
+    # Both halves are installed together: a trace id is only useful because the
+    # log lines carry it, so no process wants one without the other.
+    _configure_tracing(service)
 
 
 def adopt_loggers(*names: str) -> None:

@@ -54,3 +54,17 @@ class KafkaSettings(BaseSettings):
 
     bootstrap_servers: str = "localhost:19092"
     message_timeout_ms: int = 300_000
+
+
+class TracingSettings(BaseSettings):
+    """Where this process sends its spans, if anywhere (design §2).
+
+    The endpoint is optional on purpose: a process started without one still
+    creates spans, so trace_id keeps reaching the log lines, but nothing is
+    sent. That is what keeps a test run, or a process started by hand, from
+    retrying deliveries to a collector that is not running.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="OTEL_")
+
+    exporter_otlp_endpoint: str | None = None
