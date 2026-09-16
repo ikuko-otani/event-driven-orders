@@ -5,16 +5,18 @@ An entry is closed by a commit that removes the gap, not by deciding to remove i
 
 | ID | Summary | Status |
 |---|---|---|
-| TD-001 | The retry path emits no log line, so a retrying consumer is unobservable | Open |
+| TD-001 | The retry path emits no log line, so a retrying consumer is unobservable | **Closed** |
 | TD-002 | No engine validates a pooled connection before use | Open |
 | TD-003 | A poller that exits is never restarted | Open |
+| TD-004 | A trace stops at the broker, so one order's work is several traces | Open |
 
 ---
 
 ## TD-001: The retry path emits no log line
 
-**Status**: Open.
+**Status**: Closed by the structured-logging work.
 **Identified**: 2026-09-11, while driving the failure paths against the running stack.
+**Closed**: 2026-09-16.
 
 ### What is missing
 
@@ -32,6 +34,8 @@ An operator watching the logs during an incident sees a consumer that has stoppe
 
 The structured-logging work already carries the pipeline this needs.
 The gap is registered separately because that work is itself a candidate for deferral, and the two must not be closed by assumption.
+`handle_with_retry` now writes one `event_handle_failed` line per failed attempt, carrying the attempt number, the ceiling it is waiting under, and the error that caused it.
+The silence this entry describes is gone: the 56 seconds that produced one line now produce five.
 
 ---
 
@@ -86,3 +90,28 @@ A single-command local start is an explicit goal of this stack, and a stack that
 `restart: unless-stopped` on the application services.
 This is the local answer only: a scheduler restarts a failed task in the deployment shape this project plans, so the entry covers the Compose stack rather than the deployed one.
 Restarting a poller is safe under the singleton rule, since the restarted process is the same single instance, not a second one.
+
+---
+
+## TD-004: A trace stops at the broker
+
+**Status**: Open.
+**Identified**: 2026-09-16, while adding spans to the processing paths.
+
+### What is missing
+
+The event envelope has eight fields, and none of them carries trace context.
+The outbox table has no column for it either.
+A span opened in one process therefore has no way to name a span in another as its parent, and the four processes an order passes through produce four unrelated traces rather than one.
+
+### How it fails
+
+The question "where did this order spend its time" cannot be answered from a trace.
+Each trace answers it for one process — the confirm, the publish, the reservation, the compensation — while the waits between them go unrecorded, and in a queue-based system those waits are where the time actually goes.
+Correlating them by hand is possible through the log lines, since every line carries the order or event id, but that is a search rather than a picture.
+
+### What closing it takes
+
+A field on the envelope carrying W3C trace context, a column on both outbox tables to persist it, and one Alembic migration per service.
+The consumer then continues the trace it is handed instead of starting one, and the poller passes the value through without reading it, which is the only role the design gives it.
+This is deliberately deferred: the design names observability as a reduction candidate and settles on structured logging, so the connected trace is an addition to that decision rather than a gap in it.
