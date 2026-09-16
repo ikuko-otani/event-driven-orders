@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import structlog
+from opentelemetry import trace
 from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
@@ -22,6 +23,7 @@ from common.envelope import envelope
 from common.messaging import OutboxMixin
 
 logger = structlog.stdlib.get_logger(__name__)
+tracer = trace.get_tracer(__name__)
 
 
 class DeliveryError(Protocol):
@@ -92,61 +94,72 @@ def publish_batch(
         )
     )
 
-    acked: list[uuid.UUID] = []
-    failed: list[tuple[uuid.UUID, DeliveryError]] = []
-    for row in rows:
-        producer.produce(
-            config.topic,
-            key=str(row.aggregate_id),
-            value=json.dumps(envelope(row)).encode(),
-            on_delivery=_on_delivery(row.id, acked, failed),
-        )
-    while producer.flush(config.flush_timeout) > 0:
-        # Every message resolves within message.timeout.ms, so this ends.
-        continue
+    # An idle cycle has nothing to time: the poller wakes ten times a second,
+    # so a span per cycle would bury the ones that published under noise.
+    if not rows:
+        return 0
 
-    if acked:
-        session.execute(update(outbox).where(outbox.id.in_(acked)).values(published_at=func.now()))
+    with tracer.start_as_current_span("outbox.publish_batch") as span:
+        span.set_attribute("topic", config.topic)
+        span.set_attribute("selected", len(rows))
 
-        # How long the batch's oldest row had been waiting: design §6.4's
-        # backlog-age signal, which a depth count on its own misses.
-        age = datetime.now(UTC) - rows[0].created_at
-        logger.info(
-            "outbox_batch_published",
-            topic=config.topic,
-            published=len(acked),
-            selected=len(rows),
-            oldest_age_ms=round(age.total_seconds() * 1000),
-        )
-    if failed:
-        permanent = [row_id for row_id, error in failed if not error.retriable()]
-        session.execute(
-            update(outbox)
-            .where(outbox.id.in_([row_id for row_id, _ in failed]))
-            .values(
-                publish_attempts=outbox.publish_attempts + 1,
-                quarantined_at=case(
-                    (
-                        outbox.id.in_(permanent)
-                        | (outbox.publish_attempts + 1 >= config.max_attempts),
-                        func.now(),
-                    ),
-                    else_=None,
-                ),
+        acked: list[uuid.UUID] = []
+        failed: list[tuple[uuid.UUID, DeliveryError]] = []
+        for row in rows:
+            producer.produce(
+                config.topic,
+                key=str(row.aggregate_id),
+                value=json.dumps(envelope(row)).encode(),
+                on_delivery=_on_delivery(row.id, acked, failed),
             )
-        )
+        while producer.flush(config.flush_timeout) > 0:
+            # Every message resolves within message.timeout.ms, so this ends.
+            continue
 
-        # Quarantined rows leave the poller's sight for good, so the count that
-        # went is the one signal that they did (design §5.7).
-        logger.warning(
-            "outbox_publish_failed",
-            topic=config.topic,
-            failed=len(failed),
-            permanent=len(permanent),
-        )
+        if acked:
+            session.execute(
+                update(outbox).where(outbox.id.in_(acked)).values(published_at=func.now())
+            )
 
-    session.commit()
-    return len(rows)
+            # How long the batch's oldest row had been waiting: design §6.4's
+            # backlog-age signal, which a depth count on its own misses.
+            age = datetime.now(UTC) - rows[0].created_at
+            logger.info(
+                "outbox_batch_published",
+                topic=config.topic,
+                published=len(acked),
+                selected=len(rows),
+                oldest_age_ms=round(age.total_seconds() * 1000),
+            )
+        if failed:
+            permanent = [row_id for row_id, error in failed if not error.retriable()]
+            session.execute(
+                update(outbox)
+                .where(outbox.id.in_([row_id for row_id, _ in failed]))
+                .values(
+                    publish_attempts=outbox.publish_attempts + 1,
+                    quarantined_at=case(
+                        (
+                            outbox.id.in_(permanent)
+                            | (outbox.publish_attempts + 1 >= config.max_attempts),
+                            func.now(),
+                        ),
+                        else_=None,
+                    ),
+                )
+            )
+
+            # Quarantined rows leave the poller's sight for good, so the count that
+            # went is the one signal that they did (design §5.7).
+            logger.warning(
+                "outbox_publish_failed",
+                topic=config.topic,
+                failed=len(failed),
+                permanent=len(permanent),
+            )
+
+        session.commit()
+        return len(rows)
 
 
 def run_forever(
