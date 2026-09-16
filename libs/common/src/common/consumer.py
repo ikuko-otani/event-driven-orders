@@ -16,12 +16,14 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
 import structlog
+from opentelemetry import trace
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from common.messaging import ProcessedEventMixin
 
 logger = structlog.stdlib.get_logger(__name__)
+tracer = trace.get_tracer(__name__)
 
 # Header values go on the wire as bytes, and the client encodes a str for us.
 # The type is spelled exactly as confluent-kafka spells it: list is invariant,
@@ -235,6 +237,7 @@ def _claim(
     return result.first() is not None
 
 
+@tracer.start_as_current_span("event.handle")
 def handle_message(
     message: Message,
     *,
@@ -261,6 +264,12 @@ def handle_message(
         envelope = json.loads(value)
     except json.JSONDecodeError as error:
         raise PermanentFailure(f"the message is not JSON: {error}") from error
+
+    # Name the message on the span itself: a trace opened from Jaeger then says
+    # what was being handled, without having to find the log line first.
+    span = trace.get_current_span()
+    span.set_attribute("event.type", envelope["event_type"])
+    span.set_attribute("event.id", envelope["event_id"])
 
     with session_factory() as session:
         claimed = _claim(
