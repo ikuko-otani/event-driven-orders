@@ -23,8 +23,18 @@ def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 
 
 async def get_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
-    """One session per request; the session's transaction is the request's transaction."""
+    """One session per request; the route commits, this guarantees the rollback.
+
+    A yield dependency's cleanup runs after FastAPI has sent the response, so a
+    commit here could not change what the client was already told. Ending a
+    failed transaction is the part that is still meaningful afterwards.
+    """
     sessionmaker: async_sessionmaker[AsyncSession] = request.app.state.sessionmaker
     async with sessionmaker() as session:
-        yield session
-        await session.commit()
+        try:
+            yield session
+        except Exception:
+            # A route that raised may have flushed rows already, so end its
+            # transaction here rather than leaving it to the connection's return.
+            await session.rollback()
+            raise
