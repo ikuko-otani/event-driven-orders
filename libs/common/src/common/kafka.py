@@ -5,10 +5,27 @@ common.consumer depend only on their own protocols, so a test can hand a loop
 a fake without either side knowing about the other (design §5.2, §5.4).
 """
 
-from confluent_kafka import Consumer, Producer
+from confluent_kafka import Consumer, KafkaError, Producer
 
 from common.consumer import ConsumerConfig
 from common.settings import KafkaSettings
+
+# Delivery failures that will fail again however often the row is retried: the
+# message is malformed or too large, or the topic is not ours to write to.
+# Everything else — a timeout, a dropped connection, a broker that is simply
+# down — is transient and belongs to the poller's attempt counting (design §5.4).
+# The list lives here because this is the only module that may know the client's
+# constants, and the loop is handed the plain integers.
+PERMANENT_DELIVERY_ERRORS: frozenset[int] = frozenset(
+    {
+        KafkaError.MSG_SIZE_TOO_LARGE,
+        KafkaError.INVALID_MSG,
+        KafkaError.TOPIC_AUTHORIZATION_FAILED,
+        KafkaError.UNKNOWN_TOPIC_OR_PART,
+        KafkaError._VALUE_SERIALIZATION,
+        KafkaError._KEY_SERIALIZATION,
+    }
+)
 
 
 def build_producer(settings: KafkaSettings) -> Producer:

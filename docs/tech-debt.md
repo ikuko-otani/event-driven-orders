@@ -10,11 +10,11 @@ An entry is closed by a commit that removes the gap, not by deciding to remove i
 | TD-003 | A poller that exits is never restarted | Open |
 | TD-004 | A trace stops at the broker, so one order's work is several traces | Open |
 | TD-005 | A write endpoint answers before its transaction commits, and caches the answer first | **Closed** |
-| TD-006 | The poller treats every failed send as permanent, so a broker outage quarantines healthy rows | Open |
+| TD-006 | The poller treats every failed send as permanent, so a broker outage quarantines healthy rows | **Closed** |
 | TD-007 | `docker compose up` on a fresh volume starts the pollers before any schema exists | Open |
 | TD-008 | An oversized outbox row raises inside `produce()` and stops the poller | Open |
 | TD-009 | A message that is JSON but not an envelope is retried as a technical failure | Open |
-| TD-010 | No test runs two confirms, or two reservations of one item, concurrently | Open |
+| TD-010 | No test runs two confirms, or two reservations of one item, concurrently | **Closed** |
 | TD-011 | The inventory consumer reserves stock for any event type on its topic | Open |
 | TD-012 | Tests that assert on log lines depend on a fixture in another file having run first | Open |
 | TD-013 | The dead-letter and quarantine log lines do not say which message or row failed | Open |
@@ -161,8 +161,9 @@ A test refuses the commit with a deferred constraint trigger and asserts the 500
 
 ## TD-006: The poller treats every failed send as permanent, so a broker outage quarantines healthy rows
 
-**Status**: Open.
+**Status**: Closed.
 **Identified**: 2026-09-16, during an adversarial review of the implementation.
+**Closed**: 2026-09-17.
 
 ### What is missing
 
@@ -180,6 +181,10 @@ The retry-on-the-next-cycle path of design §5.4 never runs, and the six unit te
 Classify by error code rather than by the flag: a short list of permanent codes, everything else transient and bounded by `max_attempts`.
 One test against a real producer pointed at an unreachable address, asserting that the row is not quarantined after one failure.
 The decision belongs in `common/kafka.py`, the one module that knows the client's constants.
+The classification is now a list of permanent error codes held in `common/kafka.py`, the one module that may know the client's constants, and the loop is handed the plain integers.
+Anything not on that list is transient and bounded by `max_attempts`, so an unlisted code costs a few attempts rather than a permanent quarantine.
+The fake delivery error carries a code instead of a flag it could choose, so a unit test can no longer describe a failure the real client cannot report.
+A test publishes to an address nothing listens on and asserts the row keeps its place in the outbox after the send times out.
 
 ---
 
@@ -251,8 +256,9 @@ A shape check straight after parsing that raises `PermanentFailure`, and one par
 
 ## TD-010: No test runs two confirms, or two reservations of one item, concurrently
 
-**Status**: Open.
+**Status**: Closed.
 **Identified**: 2026-09-16, during an adversarial review of the implementation.
+**Closed**: 2026-09-17.
 
 ### What is missing
 
@@ -268,6 +274,8 @@ Both were exercised by hand during the review and held; the suite does not say s
 
 Ten concurrent confirms of one `PENDING` order through the ASGI client, asserting one outbox row.
 Two reservations of the last unit of one item on two threads, asserting one `Reserved` and one `Insufficient`.
+Ten concurrent confirms of one PENDING order now run through the ASGI client and assert a single outbox row.
+Two threads, released together by a barrier, reserve the last unit of one item and assert one Reserved, one Insufficient, and one reservation row.
 
 ---
 

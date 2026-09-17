@@ -8,7 +8,7 @@ common.poller stays free of anything order-api knows.
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from common.kafka import build_producer
+from common.kafka import PERMANENT_DELIVERY_ERRORS, build_producer
 from common.observability import configure
 from common.poller import PollerConfig, run_forever
 from common.settings import DatabaseSettings, KafkaSettings
@@ -25,7 +25,7 @@ def run() -> None:
         sessionmaker(engine),
         outbox=Outbox,
         producer=build_producer(KafkaSettings()),
-        config=PollerConfig(topic=TOPIC),
+        config=PollerConfig(topic=TOPIC, permanent_errors=PERMANENT_DELIVERY_ERRORS),
     )
 
 

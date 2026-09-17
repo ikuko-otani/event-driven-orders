@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+from confluent_kafka import KafkaError
 from factories import make_confirmed_order_event
 from fakes import FakeConsumer, FakeDeliveryError, FakeMessage, FakeProducer
 from sqlalchemy import delete, select
@@ -360,7 +361,9 @@ async def test_a_dead_letter_the_broker_refused_leaves_the_offset_uncommitted(
 ) -> None:
     consumer = FakeConsumer()
     message = _positioned(uuid.uuid4())
-    producer = FakeProducer(errors={message.message_key: FakeDeliveryError()})
+    producer = FakeProducer(
+        errors={message.message_key: FakeDeliveryError(KafkaError._MSG_TIMED_OUT)}
+    )
 
     with pytest.raises(RuntimeError, match="not acked"):
         handle_with_retry(

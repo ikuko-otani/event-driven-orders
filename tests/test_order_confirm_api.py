@@ -1,5 +1,6 @@
 """HTTP-level tests for POST /orders/{order_id}/confirm: the transition and its outbox row."""
 
+import asyncio
 from uuid import uuid4
 
 import pytest
@@ -118,3 +119,24 @@ async def test_confirming_another_entitys_order_is_404_and_leaves_it_untouched(
     reread = await api_client.get(f"/orders/{order.id}", headers={"X-Entity-Id": str(entity.id)})
     assert reread.json()["status"] == "PENDING"
     assert await _outbox_rows(db_session, order) == []
+
+
+@pytest.mark.asyncio
+async def test_ten_concurrent_confirms_write_exactly_one_outbox_row(
+    db_session: AsyncSession, api_client: AsyncClient
+) -> None:
+    """Two confirms in sequence pass on a read-then-write too; only concurrent ones prove it."""
+    entity, customer, item = await _seed_masters(db_session)
+    order = await make_order(db_session, entity=entity, customer=customer, lines=[(item, 3)])
+    await db_session.commit()
+    headers = {"X-Entity-Id": str(entity.id)}
+
+    # gather starts all ten before the first finishes, so more than one of them
+    # reads PENDING; the conditional UPDATE is what decides between them (§5.7).
+    responses = await asyncio.gather(
+        *[api_client.post(f"/orders/{order.id}/confirm", headers=headers) for _ in range(10)]
+    )
+
+    assert {r.status_code for r in responses} == {200}
+    assert {r.json()["status"] for r in responses} == {"CONFIRMED"}
+    assert len(await _outbox_rows(db_session, order)) == 1

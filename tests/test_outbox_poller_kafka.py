@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from common.kafka import build_producer
+from common.kafka import PERMANENT_DELIVERY_ERRORS, build_producer
 from common.poller import PollerConfig, publish_batch
 from common.settings import KafkaSettings
 from order_api.events import order_confirmed_outbox
@@ -62,3 +62,40 @@ async def test_a_confirmed_order_reaches_the_broker_and_is_marked_published(
     assert value is not None
     assert json.loads(value)["event_type"] == "OrderConfirmed"
     assert sync_session.scalars(select(Outbox)).one().published_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_send_to_an_unreachable_broker_is_left_for_the_next_cycle(
+    db_session: AsyncSession, sync_session: Session
+) -> None:
+    """The failure only a real client can report: the code in its delivery error.
+
+    Nothing listens on the address, so every send times out — the outage this
+    guards against, and the case where the fake and the real client used to
+    disagree (design §5.4).
+    """
+    entity = await make_sales_entity(db_session)
+    customer = await make_customer(db_session, entity=entity)
+    item = await make_item(db_session)
+    order = await make_order(
+        db_session, entity=entity, customer=customer, lines=[(item, 3)], status="CONFIRMED"
+    )
+    db_session.add(order_confirmed_outbox(order))
+    await db_session.commit()
+
+    # A timeout short enough for a test, against an address nothing answers on.
+    unreachable = build_producer(
+        KafkaSettings(bootstrap_servers="127.0.0.1:1", message_timeout_ms=2000)
+    )
+    publish_batch(
+        sync_session,
+        outbox=Outbox,
+        producer=unreachable,
+        config=PollerConfig(topic="orders.events", permanent_errors=PERMANENT_DELIVERY_ERRORS),
+    )
+
+    # Not quarantined: one outage must not take the row out of the poller's
+    # sight, it must only spend one of its attempts (design §5.4).
+    row = sync_session.scalars(select(Outbox)).one()
+    assert (row.published_at, row.quarantined_at) == (None, None)
+    assert row.publish_attempts == 1

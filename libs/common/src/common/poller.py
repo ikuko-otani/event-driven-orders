@@ -27,9 +27,13 @@ tracer = trace.get_tracer(__name__)
 
 
 class DeliveryError(Protocol):
-    """The error object the broker hands back to a delivery callback."""
+    """The error object the broker hands back to a delivery callback.
 
-    def retriable(self) -> bool: ...
+    Only the code is asked for: the client leaves its own retriable() flag
+    unset on a delivery report, so that flag answers False even for a timeout.
+    """
+
+    def code(self) -> int: ...
 
 
 DeliveryCallback = Callable[[DeliveryError | None, Any], None]
@@ -54,6 +58,11 @@ class PollerConfig:
     poll_interval: float = 0.1
     flush_timeout: float = 10.0
     max_attempts: int = 5
+
+    # Which delivery errors are worth no further attempt. Empty by default, so a
+    # caller that names none gets every failure bounded by max_attempts instead
+    # of a quarantine this loop cannot justify on its own.
+    permanent_errors: frozenset[int] = frozenset()
 
 
 def _on_delivery(
@@ -132,7 +141,9 @@ def publish_batch(
                 oldest_age_ms=round(age.total_seconds() * 1000),
             )
         if failed:
-            permanent = [row_id for row_id, error in failed if not error.retriable()]
+            permanent = [
+                row_id for row_id, error in failed if error.code() in config.permanent_errors
+            ]
             session.execute(
                 update(outbox)
                 .where(outbox.id.in_([row_id for row_id, _ in failed]))

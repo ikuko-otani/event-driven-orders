@@ -1,7 +1,9 @@
 """Reserving an order's stock, with no broker running (design §7.7)."""
 
+import threading
 import uuid
 from collections.abc import Callable
+from typing import Any
 
 import pytest
 from factories import make_confirmed_order_event, make_redelivery
@@ -15,6 +17,7 @@ from inventory_worker.models import Inventory, InventoryReservation
 from inventory_worker.services.reservations import (
     AlreadyReserved,
     Insufficient,
+    ReservationOutcome,
     Reserved,
     reserve_order,
 )
@@ -117,3 +120,48 @@ async def test_a_line_whose_item_has_no_inventory_row_is_a_permanent_failure(
 
     with pytest.raises(PermanentFailure):
         reserve_order(sync_session, event)
+
+
+@pytest.mark.asyncio
+async def test_two_orders_racing_for_one_unit_reserve_it_exactly_once(
+    db_session: AsyncSession,
+    sync_session: Session,
+    sync_session_factory: Callable[[], Session],
+) -> None:
+    """The row lock of design §5.2, seen from two connections at the same moment."""
+    # One unit in stock, and a second order over the same item: the factory
+    # seeds its own masters, so the rival event is derived from the first.
+    first = await make_confirmed_order_event(db_session, lines=[(1, 1)])
+    second = {
+        **first,
+        "event_id": str(uuid.uuid4()),
+        "aggregate_id": str(uuid.uuid4()),
+        "payload": {**first["payload"], "order_id": str(uuid.uuid4())},
+    }
+
+    # Threads, not tasks: reserve_order is synchronous, and a row lock only
+    # means anything across two connections. The barrier holds each thread
+    # until both have arrived, so neither can finish before the other starts.
+    outcomes: dict[str, ReservationOutcome] = {}
+    barrier = threading.Barrier(2)
+
+    def run(name: str, event: dict[str, Any]) -> None:
+        with sync_session_factory() as session:
+            barrier.wait()
+            outcomes[name] = reserve_order(session, event)
+            session.commit()
+
+    threads = [threading.Thread(target=run, args=(n, e)) for n, e in [("a", first), ("b", second)]]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    # One winner and one refusal, never two winners and never a deadlock: the
+    # loser must be told Insufficient rather than reserve the same unit again.
+    assert sorted(type(outcome).__name__ for outcome in outcomes.values()) == [
+        "Insufficient",
+        "Reserved",
+    ]
+    assert len(list(sync_session.scalars(select(InventoryReservation)))) == 1
+    assert list(sync_session.scalars(select(Inventory.quantity_reserved))) == [1]

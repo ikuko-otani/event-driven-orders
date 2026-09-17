@@ -3,17 +3,19 @@
 import json
 
 import pytest
+from confluent_kafka import KafkaError
 from factories import make_customer, make_item, make_order, make_sales_entity
 from fakes import FakeDeliveryError, FakeProducer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from common.kafka import PERMANENT_DELIVERY_ERRORS
 from common.poller import PollerConfig, publish_batch
 from order_api.events import order_confirmed_outbox
 from order_api.models import Order, Outbox
 
-CONFIG = PollerConfig(topic="orders.events")
+CONFIG = PollerConfig(topic="orders.events", permanent_errors=PERMANENT_DELIVERY_ERRORS)
 
 
 async def _seed_confirmed_order(session: AsyncSession) -> Order:
@@ -81,7 +83,7 @@ async def test_a_transient_send_failure_is_retried_on_the_next_cycle(
     db_session: AsyncSession, sync_session: Session
 ) -> None:
     order = await _seed_confirmed_order(db_session)
-    rejecting = FakeProducer({str(order.id): FakeDeliveryError()})
+    rejecting = FakeProducer({str(order.id): FakeDeliveryError(KafkaError._MSG_TIMED_OUT)})
 
     publish_batch(sync_session, outbox=Outbox, producer=rejecting, config=CONFIG)
 
@@ -100,7 +102,7 @@ async def test_a_permanent_send_failure_is_quarantined_and_never_sent_again(
     db_session: AsyncSession, sync_session: Session
 ) -> None:
     order = await _seed_confirmed_order(db_session)
-    rejecting = FakeProducer({str(order.id): FakeDeliveryError(permanent=True)})
+    rejecting = FakeProducer({str(order.id): FakeDeliveryError(KafkaError.MSG_SIZE_TOO_LARGE)})
 
     publish_batch(sync_session, outbox=Outbox, producer=rejecting, config=CONFIG)
 
@@ -120,8 +122,10 @@ async def test_a_transient_failure_at_the_attempt_limit_is_quarantined(
     db_session: AsyncSession, sync_session: Session
 ) -> None:
     order = await _seed_confirmed_order(db_session)
-    config = PollerConfig(topic="orders.events", max_attempts=1)
-    rejecting = FakeProducer({str(order.id): FakeDeliveryError()})
+    config = PollerConfig(
+        topic="orders.events", max_attempts=1, permanent_errors=PERMANENT_DELIVERY_ERRORS
+    )
+    rejecting = FakeProducer({str(order.id): FakeDeliveryError(KafkaError._MSG_TIMED_OUT)})
 
     publish_batch(sync_session, outbox=Outbox, producer=rejecting, config=config)
 
