@@ -9,7 +9,7 @@ An entry is closed by a commit that removes the gap, not by deciding to remove i
 | TD-002 | No engine validates a pooled connection before use | Open |
 | TD-003 | A poller that exits is never restarted | Open |
 | TD-004 | A trace stops at the broker, so one order's work is several traces | Open |
-| TD-005 | A write endpoint answers before its transaction commits, and caches the answer first | Open |
+| TD-005 | A write endpoint answers before its transaction commits, and caches the answer first | **Closed** |
 | TD-006 | The poller treats every failed send as permanent, so a broker outage quarantines healthy rows | Open |
 | TD-007 | `docker compose up` on a fresh volume starts the pollers before any schema exists | Open |
 | TD-008 | An oversized outbox row raises inside `produce()` and stops the poller | Open |
@@ -132,8 +132,9 @@ This is deliberately deferred: the design names observability as a reduction can
 
 ## TD-005: A write endpoint answers before its transaction commits, and caches the answer first
 
-**Status**: Open.
+**Status**: Closed.
 **Identified**: 2026-09-16, during an adversarial review of the implementation.
+**Closed**: 2026-09-17.
 
 ### What is missing
 
@@ -152,6 +153,9 @@ The confirm endpoint has the same shape: `200` leaves before the `PENDING → CO
 An explicit `await session.commit()` in each write route before it returns, with the cache write moved after it.
 `get_session` then guarantees rollback only.
 One test that fails the commit and asserts a 5xx, an empty cache, and a successful retry.
+Each write route now commits before it returns, and the response cache is written only after that commit.
+The session dependency guarantees the rollback and nothing else, since its cleanup runs after the response has already been sent.
+A test refuses the commit with a deferred constraint trigger and asserts the 500, the empty cache, and a retry that still creates the order.
 
 ---
 
