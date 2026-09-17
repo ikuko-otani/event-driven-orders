@@ -114,12 +114,12 @@ Restarting a poller is safe under the singleton rule, since the restarted proces
 
 The event envelope has eight fields, and none of them carries trace context.
 The outbox table has no column for it either.
-A span opened in one process therefore has no way to name a span in another as its parent, and the four processes an order passes through produce four unrelated traces rather than one.
+A span opened in one process therefore has no way to name a span in another as its parent, and the five processes an order passes through produce five unrelated traces rather than one.
 
 ### How it fails
 
 The question "where did this order spend its time" cannot be answered from a trace.
-Each trace answers it for one process — the confirm, the publish, the reservation, the compensation — while the waits between them go unrecorded, and in a queue-based system those waits are where the time actually goes.
+Each trace answers it for one process — the confirm, the publish of its event, the reservation, the publish of the reply, and the applying of the outcome — while the waits between them go unrecorded, and in a queue-based system those waits are where the time actually goes.
 Correlating them by hand is possible through the log lines, since every line carries the order or event id, but that is a search rather than a picture.
 
 ### What closing it takes
