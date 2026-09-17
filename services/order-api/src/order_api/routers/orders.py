@@ -49,8 +49,16 @@ async def post_order(
         body=body,
     )
 
+    # The route owns the commit: FastAPI runs a yield dependency's cleanup after
+    # the response has been sent, so a commit left there is too late to decide
+    # what the client is told (design §4.6).
+    await session.commit()
+
     if not created:
         response.status_code = status.HTTP_200_OK
+
+    # Cached only after the commit: a refused one leaves this key free, so the
+    # retry falls through to the database instead of reading back a phantom.
     await set_cached_response(
         redis,
         entity_id=x_entity_id,
@@ -98,7 +106,11 @@ async def patch_order(
     x_entity_id: uuid.UUID = Header(...),
     session: AsyncSession = Depends(get_session),
 ) -> Order:
-    return await update_order(session, entity_id=x_entity_id, order_id=order_id, body=body)
+    order = await update_order(session, entity_id=x_entity_id, order_id=order_id, body=body)
+
+    # 200 means the new lines are durable, not merely flushed.
+    await session.commit()
+    return order
 
 
 @router.post("/{order_id}/confirm", response_model=OrderRead)
@@ -108,4 +120,9 @@ async def post_order_confirm(
     session: AsyncSession = Depends(get_session),
 ) -> Order:
     """200 on the transition and on every replay alike; the state is the response (design §4.6)."""
-    return await confirm_order(session, entity_id=x_entity_id, order_id=order_id)
+    order = await confirm_order(session, entity_id=x_entity_id, order_id=order_id)
+
+    # design §4.6 chooses 200 over 202 because the transition and its outbox row
+    # are durable when the answer leaves; that holds only if the commit is here.
+    await session.commit()
+    return order
