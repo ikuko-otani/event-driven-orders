@@ -9,12 +9,16 @@ from common.poller import DeliveryCallback
 
 @dataclass(frozen=True)
 class FakeDeliveryError:
-    """A broker rejection whose permanence the test chooses (design §5.4)."""
+    """A broker rejection carrying the code a real delivery report would carry.
 
-    permanent: bool = False
+    A field cannot share its name with the method that returns it, so the code
+    is stored under a prefix, the same shape as FakeMessage's positions.
+    """
 
-    def retriable(self) -> bool:
-        return not self.permanent
+    error_code: int
+
+    def code(self) -> int:
+        return self.error_code
 
 
 class FakeProducer:
