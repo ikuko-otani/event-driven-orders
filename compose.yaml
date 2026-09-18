@@ -91,6 +91,54 @@ services:
       - "16686:16686" # UI
       - "4318:4318" # OTLP/HTTP receiver
 
+  migrate-orders:
+    build:
+      context: .
+      dockerfile: services/order-api/Dockerfile
+    # Applies the orders history and exits, so nothing that writes to that
+    # schema can start before the schema exists. poethepoet is a dev
+    # dependency and is not in the image, so alembic is called directly.
+    command:
+      - uv
+      - run
+      - --no-sync
+      - --package
+      - order-api
+      - alembic
+      - -c
+      - services/order-api/alembic.ini
+      - upgrade
+      - head
+    environment:
+      DB_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  migrate-inventory:
+    build:
+      context: .
+      dockerfile: services/inventory-worker/Dockerfile
+    # A second one-shot, not a second command in the first: each image is
+    # synced with --package, so the api image has no inventory_worker package
+    # for this history's env.py to import (design §6.1: one history per service).
+    command:
+      - uv
+      - run
+      - --no-sync
+      - --package
+      - inventory-worker
+      - alembic
+      - -c
+      - services/inventory-worker/alembic.ini
+      - upgrade
+      - head
+    environment:
+      DB_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build:
       context: .
