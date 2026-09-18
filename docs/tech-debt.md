@@ -7,11 +7,11 @@ An entry is closed by a commit that removes the gap, not by deciding to remove i
 |---|---|---|
 | TD-001 | The retry path emits no log line, so a retrying consumer is unobservable | **Closed** |
 | TD-002 | No engine validates a pooled connection before use | Open |
-| TD-003 | A poller that exits is never restarted | Open |
+| TD-003 | A poller that exits is never restarted | **Closed** |
 | TD-004 | A trace stops at the broker, so one order's work is several traces | Open |
 | TD-005 | A write endpoint answers before its transaction commits, and caches the answer first | **Closed** |
 | TD-006 | The poller treats every failed send as permanent, so a broker outage quarantines healthy rows | **Closed** |
-| TD-007 | `docker compose up` on a fresh volume starts the pollers before any schema exists | Open |
+| TD-007 | `docker compose up` on a fresh volume starts the pollers before any schema exists | **Closed** |
 | TD-008 | An oversized outbox row raises inside `produce()` and stops the poller | Open |
 | TD-009 | A message that is JSON but not an envelope is retried as a technical failure | Open |
 | TD-010 | No test runs two confirms, or two reservations of one item, concurrently | **Closed** |
@@ -83,7 +83,7 @@ Six call sites set the same options independently, which is the reason this went
 
 ## TD-003: A poller that exits is never restarted
 
-**Status**: Open.
+**Status**: Closed.
 **Identified**: 2026-09-11, after stopping the database underneath a running stack.
 
 ### What is missing
@@ -190,7 +190,7 @@ A test publishes to an address nothing listens on and asserts the row keeps its 
 
 ## TD-007: `docker compose up` on a fresh volume starts the pollers before any schema exists
 
-**Status**: Open.
+**Status**: Closed.
 **Identified**: 2026-09-16, during an adversarial review of the implementation.
 
 ### What is missing
@@ -205,8 +205,9 @@ The single-command start this stack promises does not hold for the first start, 
 
 ### What closing it takes
 
-A one-shot `migrate` service on the service image, running both histories, that every application process waits on with `service_completed_successfully`.
-A restart policy on the application services, so a poller that loses the race is started again rather than left down.
+Two one-shot `migrate` services rather than one: each image is synced with `--package`, so the order-api image does not contain the inventory package that the inventory history's `env.py` imports.
+Each application process waits with `service_completed_successfully` on the one-shot for its own schema, which keeps the service boundary of design §3.1 intact in Compose as well.
+A restart policy on the application services, so a process that loses a race with its dependencies is started again rather than left down.
 
 ---
 
