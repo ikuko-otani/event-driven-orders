@@ -149,9 +149,13 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     ports:
       - "8000:8000"
+    # Restarted on exit so a crash does not silently end the HTTP service.
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      migrate-orders:
+        condition: service_completed_successfully
       redpanda:
         condition: service_healthy
       redis:
@@ -188,9 +192,14 @@ services:
       DB_HOST: postgres
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    # Restarted on exit: nothing is lost when a poller dies, but nothing
+    # restarts it either, so publication stays down until someone notices.
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      migrate-orders:
+        condition: service_completed_successfully
       redpanda-init:
         condition: service_completed_successfully
 
@@ -215,9 +224,13 @@ services:
       DB_HOST: postgres
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    # Restarted on exit so the reservation outcome keeps being applied.
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      migrate-orders:
+        condition: service_completed_successfully
       redpanda-init:
         condition: service_completed_successfully
 
@@ -232,9 +245,13 @@ services:
       DB_HOST: postgres
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    # Restarted on exit so reservations keep being made.
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      migrate-inventory:
+        condition: service_completed_successfully
       redpanda-init:
         condition: service_completed_successfully
 
@@ -257,9 +274,13 @@ services:
       DB_HOST: postgres
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    # Restarted on exit: the same singleton comes back, never a second one.
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      migrate-inventory:
+        condition: service_completed_successfully
       redpanda-init:
         condition: service_completed_successfully
 
