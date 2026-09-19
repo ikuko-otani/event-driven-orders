@@ -14,7 +14,7 @@ Five processes, two schemas in one PostgreSQL instance, and two business topics.
 No arrow crosses from one service's database to the other: the only path between them is the broker.
 
 ```mermaid
-flowchart LR
+flowchart TB
     client(["Client"])
 
     subgraph oa["order-api"]
