@@ -46,5 +46,6 @@ migrate-orders = "alembic -c services/order-api/alembic.ini upgrade head"
 migrate-inventory = "alembic -c services/inventory-worker/alembic.ini upgrade head"
 migrate = ["migrate-orders", "migrate-inventory"]
 seed = "python scripts/seed.py"
+smoke = "python scripts/smoke.py"
 check = ["format", "lint", "typecheck", "test"]
 ci = ["format-check", "lint", "typecheck", "test"]
