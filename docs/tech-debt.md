@@ -20,7 +20,7 @@ An entry is closed by a commit that removes the gap, not by deciding to remove i
 | TD-013 | The dead-letter and quarantine log lines do not say which message or row failed | Open |
 | TD-014 | Two things the design describes do not exist: `DELETE /orders/{id}` and the re-injection script | Open |
 | TD-015 | No process handles SIGTERM, so a stop waits ten seconds and ends in SIGKILL | Open |
-| TD-016 | No test drives one order through both relays and both consumers | Open |
+| TD-016 | No test drives one order through both relays and both consumers | **Closed** |
 
 ---
 
@@ -391,8 +391,9 @@ A signal handler that sets a flag, a loop condition that reads it, and `close()`
 
 ## TD-016: No test drives one order through both relays and both consumers
 
-**Status**: Open.
+**Status**: Closed by the Compose smoke check.
 **Identified**: 2026-09-16, during an adversarial review of the implementation.
+**Closed**: 2026-09-19.
 
 ### What is missing
 
@@ -406,4 +407,7 @@ The suite that gates every merge does not exercise it, although the design names
 
 ### What closing it takes
 
-One test that calls each stage once, in order, against the Redpanda container the fixtures already start: confirm through the API, `publish_batch`, one `handle_with_retry` on each side, `publish_batch` again, then `GET /orders/{id}`.
+A check that drives the path rather than one that reassembles it.
+`scripts/smoke.py` confirms an order against a running stack and polls `GET /orders/{id}` until the status is `RESERVED`, which it can reach only through both relays and both consumers, running as the processes Compose starts rather than as calls a test makes in order.
+CI runs it in a job of its own, so every pull request exercises the path; the same check runs locally with `uv run poe smoke`.
+It asserts the outcome and not the stages in between: a test that needs to observe one hop still drives that stage directly, as the broker-backed tests do.
