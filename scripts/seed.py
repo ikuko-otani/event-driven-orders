@@ -2,6 +2,13 @@
 
 Run manually against the docker-compose Postgres — never against the
 testcontainers database, which pytest builds from scratch on every run.
+
+This runs on the host and not inside a service image: it writes to both
+schemas, so it imports both service packages, while each image is synced
+for one service alone. Writing to both is exactly what design §3.1 forbids
+the services themselves, which is what makes the seed a development tool
+rather than a part of either service.
+
 Currency needs no row of its own: design §3.2 has no currency table, only a
 single ISO 4217 value seeded once and carried on each order.
 """
