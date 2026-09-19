@@ -2,8 +2,8 @@
 
 Run manually against the docker-compose Postgres — never against the
 testcontainers database, which pytest builds from scratch on every run.
-Currency ("通貨1種") needs no row of its own: design §3.2 has no currency
-table, only a single seeded string value carried on each order later.
+Currency needs no row of its own: design §3.2 has no currency table, only a
+single ISO 4217 value seeded once and carried on each order.
 """
 
 from decimal import Decimal
