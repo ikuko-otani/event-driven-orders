@@ -23,6 +23,12 @@ from inventory_worker.services.reservations import (
     reserve_order,
 )
 
+# Which event this handler is for. The topic carries every event order-api
+# produces, so a consumer applies the ones it has work for and leaves the rest
+# alone (design §4.2). The name is the wire contract, quoted rather than
+# imported: inventory-worker reads order-api's events, never its code (§3.1).
+HANDLED_EVENT_TYPE = "OrderConfirmed"
+
 
 def handle_order_confirmed(session: Session, event: dict[str, Any]) -> None:
     """Reserve the order's stock, and announce whichever outcome it reached.
@@ -30,6 +36,11 @@ def handle_order_confirmed(session: Session, event: dict[str, Any]) -> None:
     Nothing commits here: the caller owns the transaction this shares with the
     processed_events claim (design §5.2).
     """
+    # Anything else on this topic is not a confirmation, and reserving stock
+    # for it would hand the order's units to an event that never asked for them.
+    if event["event_type"] != HANDLED_EVENT_TYPE:
+        return
+
     # Reserve first; everything below only reports what this call decided.
     outcome = reserve_order(session, event)
 
