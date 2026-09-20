@@ -62,3 +62,17 @@ async def test_a_redelivered_order_announces_nothing_new(
 
     assert len(list(sync_session.scalars(select(Outbox)))) == 1
     assert len(list(sync_session.scalars(select(InventoryReservation)))) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_event_of_another_type_reserves_nothing(
+    db_session: AsyncSession, sync_session: Session
+) -> None:
+    event = await make_confirmed_order_event(db_session, lines=[(100, 3)])
+    event["event_type"] = "OrderCancelled"
+
+    handle_order_confirmed(sync_session, event)
+    sync_session.commit()
+
+    assert list(sync_session.scalars(select(Outbox))) == []
+    assert list(sync_session.scalars(select(InventoryReservation))) == []
