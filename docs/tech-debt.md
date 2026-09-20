@@ -15,7 +15,7 @@ An entry is closed by a commit that removes the gap, not by deciding to remove i
 | TD-008 | An oversized outbox row raises inside `produce()` and stops the poller | Open |
 | TD-009 | A message that is JSON but not an envelope is retried as a technical failure | Open |
 | TD-010 | No test runs two confirms, or two reservations of one item, concurrently | **Closed** |
-| TD-011 | The inventory consumer reserves stock for any event type on its topic | Open |
+| TD-011 | The inventory consumer reserves stock for any event type on its topic | **Closed** |
 | TD-012 | Tests that assert on log lines depend on a fixture in another file having run first | Open |
 | TD-013 | The dead-letter and quarantine log lines do not say which message or row failed | Open |
 | TD-014 | Two things the design describes do not exist: `DELETE /orders/{id}` and the re-injection script | Open |
@@ -225,12 +225,15 @@ The client rejects a message over its size limit synchronously, from `produce()`
 
 A 2 MB value raised `KafkaException(MSG_SIZE_TOO_LARGE)` before any callback ran, which ends the poller process.
 On restart the same row is selected first and the process ends again.
+Since the restart policy landed, that restart is automatic and unattended, so the poller now crash-loops on the row rather than staying down — a relay that is running and publishing nothing is harder to notice than one that has visibly stopped.
 The line cap on `POST /orders` keeps a legitimate order far below the limit, so today this needs a hand-written row; the containment the design promises in §5.7 is nevertheless absent.
 
 ### What closing it takes
 
 A `try` around `produce()` that records the row as a permanent failure, sharing the classification of TD-006.
 A fake producer entry that raises on `produce()`, and one test.
+That classification cannot simply be reused, however: `permanent_errors` is matched against a delivery report's `code()`, while `produce()` raises an exception whose type this loop may not name, because it does not import the client.
+Closing this therefore settles an interface — a classifier handed in through `PollerConfig`, or a bare `except Exception` bounded by `max_attempts` — rather than only adding a `try`.
 
 ---
 
@@ -282,8 +285,9 @@ Two threads, released together by a barrier, reserve the last unit of one item a
 
 ## TD-011: The inventory consumer reserves stock for any event type on its topic
 
-**Status**: Open.
+**Status**: Closed.
 **Identified**: 2026-09-16, during an adversarial review of the implementation.
+**Closed**: 2026-09-20.
 
 ### What is missing
 
@@ -298,6 +302,9 @@ Nothing produces such an event today, but the design reserves that name for the 
 ### What closing it takes
 
 One early return on the event type, and the test above.
+`handle_order_confirmed` now returns on any envelope whose `event_type` is not `OrderConfirmed`.
+A test sends an envelope named `OrderCancelled` carrying a confirmation's payload, and asserts that no reservation row and no outbox row follow.
+The two consumers now have the same shape: each names the events it has work for, and leaves the rest of its topic to whoever does.
 
 ---
 
