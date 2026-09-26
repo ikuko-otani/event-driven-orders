@@ -237,6 +237,37 @@ def _claim(
     return result.first() is not None
 
 
+def _parse_envelope(value: bytes | None) -> dict[str, Any]:
+    """Decode one message's value into its envelope, or judge it unusable for good.
+
+    Every failure here is a property of the bytes themselves, so it would recur
+    identically on every attempt: each is raised as PermanentFailure, and the
+    message leaves through the dead-letter path on its first attempt (§5.7).
+    """
+    # Nothing to decode, and nothing a retry could add.
+    if value is None:
+        raise PermanentFailure("the message carries no value")
+    try:
+        envelope = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise PermanentFailure(f"the message is not JSON: {error}") from error
+
+    # JSON is not yet an envelope. These are the two fields the loop itself
+    # reads before any handler runs; the payload is the handler's to judge.
+    if not isinstance(envelope, dict):
+        raise PermanentFailure(f"the message is a JSON {type(envelope).__name__}, not an object")
+    if not isinstance(envelope.get("event_type"), str):
+        raise PermanentFailure("the envelope has no event_type")
+    event_id = envelope.get("event_id")
+    if not isinstance(event_id, str):
+        raise PermanentFailure("the envelope has no event_id")
+    try:
+        uuid.UUID(event_id)
+    except ValueError as error:
+        raise PermanentFailure(f"the event_id is not a UUID: {event_id!r}") from error
+    return envelope
+
+
 @tracer.start_as_current_span("event.handle")
 def handle_message(
     message: Message,
@@ -257,13 +288,7 @@ def handle_message(
     # Decoding is judged here rather than in the retry loop: whether a failure
     # can be retried is a property of the failure, and only this step knows
     # that its own failures are permanent (design §5.7).
-    value = message.value()
-    if value is None:
-        raise PermanentFailure("the message carries no value")
-    try:
-        envelope = json.loads(value)
-    except json.JSONDecodeError as error:
-        raise PermanentFailure(f"the message is not JSON: {error}") from error
+    envelope = _parse_envelope(message.value())
 
     # Name the message on the span itself: a trace opened from Jaeger then says
     # what was being handled, without having to find the log line first.
