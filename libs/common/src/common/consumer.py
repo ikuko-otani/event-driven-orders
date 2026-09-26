@@ -199,15 +199,27 @@ def dead_letter(
     if delivered != [None]:
         raise RuntimeError(f"the dead-letter copy was not acked: {delivered}")
 
+    # The position finds the original in the log whatever it holds; the event
+    # id, where the envelope parsed, finds its trace and its processed_events row.
+    try:
+        event_id: str | None = _parse_envelope(message.value())["event_id"]
+    except PermanentFailure:
+        event_id = None
+
     # The copy is durable now, so say so before the offset moves: DLQ depth is
     # the operator's detection signal (design §5.6), and a silent hand-off
     # leaves the failure invisible until someone thinks to look.
     logger.error(
         "event_dead_lettered",
+        topic=message.topic(),
+        partition=message.partition(),
+        offset=message.offset(),
+        event_id=event_id,
         dlq_topic=config.dlq_topic,
         consumer=config.group_id,
         attempts=attempts,
         error_class=type(error).__name__,
+        error_message=str(error),
     )
     consumer.commit(message=message, asynchronous=False)
 
