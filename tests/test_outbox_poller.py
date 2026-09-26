@@ -83,7 +83,9 @@ async def test_a_transient_send_failure_is_retried_on_the_next_cycle(
     db_session: AsyncSession, sync_session: Session
 ) -> None:
     order = await _seed_confirmed_order(db_session)
-    rejecting = FakeProducer({str(order.id): FakeDeliveryError(KafkaError._MSG_TIMED_OUT)})
+    rejecting = FakeProducer(
+        {str(order.id): FakeDeliveryError(KafkaError._MSG_TIMED_OUT, "_MSG_TIMED_OUT")}
+    )
 
     publish_batch(sync_session, outbox=Outbox, producer=rejecting, config=CONFIG)
 
@@ -102,7 +104,9 @@ async def test_a_permanent_send_failure_is_quarantined_and_never_sent_again(
     db_session: AsyncSession, sync_session: Session
 ) -> None:
     order = await _seed_confirmed_order(db_session)
-    rejecting = FakeProducer({str(order.id): FakeDeliveryError(KafkaError.MSG_SIZE_TOO_LARGE)})
+    rejecting = FakeProducer(
+        {str(order.id): FakeDeliveryError(KafkaError.MSG_SIZE_TOO_LARGE, "MSG_SIZE_TOO_LARGE")}
+    )
 
     publish_batch(sync_session, outbox=Outbox, producer=rejecting, config=CONFIG)
 
@@ -125,7 +129,9 @@ async def test_a_transient_failure_at_the_attempt_limit_is_quarantined(
     config = PollerConfig(
         topic="orders.events", max_attempts=1, permanent_errors=PERMANENT_DELIVERY_ERRORS
     )
-    rejecting = FakeProducer({str(order.id): FakeDeliveryError(KafkaError._MSG_TIMED_OUT)})
+    rejecting = FakeProducer(
+        {str(order.id): FakeDeliveryError(KafkaError._MSG_TIMED_OUT, "_MSG_TIMED_OUT")}
+    )
 
     publish_batch(sync_session, outbox=Outbox, producer=rejecting, config=config)
 

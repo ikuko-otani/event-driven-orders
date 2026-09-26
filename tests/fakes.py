@@ -9,16 +9,21 @@ from common.poller import DeliveryCallback
 
 @dataclass(frozen=True)
 class FakeDeliveryError:
-    """A broker rejection carrying the code a real delivery report would carry.
+    """A broker rejection carrying the code and name a real delivery report carries.
 
-    A field cannot share its name with the method that returns it, so the code
-    is stored under a prefix, the same shape as FakeMessage's positions.
+    A field cannot share its name with the method that returns it, so both are
+    stored under a prefix, the same shape as FakeMessage's positions. Neither
+    has a default: each test names the failure it is playing.
     """
 
     error_code: int
+    error_name: str
 
     def code(self) -> int:
         return self.error_code
+
+    def name(self) -> str:
+        return self.error_name
 
 
 class FakeProducer:

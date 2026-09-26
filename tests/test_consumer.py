@@ -398,7 +398,7 @@ async def test_a_dead_letter_the_broker_refused_leaves_the_offset_uncommitted(
     consumer = FakeConsumer()
     message = _positioned(uuid.uuid4())
     producer = FakeProducer(
-        errors={message.message_key: FakeDeliveryError(KafkaError._MSG_TIMED_OUT)}
+        errors={message.message_key: FakeDeliveryError(KafkaError._MSG_TIMED_OUT, "_MSG_TIMED_OUT")}
     )
 
     with pytest.raises(RuntimeError, match="not acked"):

@@ -29,11 +29,15 @@ tracer = trace.get_tracer(__name__)
 class DeliveryError(Protocol):
     """The error object the broker hands back to a delivery callback.
 
-    Only the code is asked for: the client leaves its own retriable() flag
-    unset on a delivery report, so that flag answers False even for a timeout.
+    Only the code and its name are asked for: the client leaves its own
+    retriable() flag unset on a delivery report, so that flag answers False
+    even for a timeout. The code decides what happens; the name is for the
+    operator reading the log.
     """
 
     def code(self) -> int: ...
+
+    def name(self) -> str: ...
 
 
 DeliveryCallback = Callable[[DeliveryError | None, Any], None]
