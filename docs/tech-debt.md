@@ -16,7 +16,7 @@ An entry is closed by a commit that removes the gap, not by deciding to remove i
 | TD-009 | A message that is JSON but not an envelope is retried as a technical failure | **Closed** |
 | TD-010 | No test runs two confirms, or two reservations of one item, concurrently | **Closed** |
 | TD-011 | The inventory consumer reserves stock for any event type on its topic | **Closed** |
-| TD-012 | Tests that assert on log lines depend on a fixture in another file having run first | Open |
+| TD-012 | Tests that assert on log lines depend on a fixture in another file having run first | **Closed** |
 | TD-013 | The dead-letter and quarantine log lines do not say which message or row failed | **Closed** |
 | TD-014 | Two things the design describes do not exist: `DELETE /orders/{id}` and the re-injection script | Open |
 | TD-015 | No process handles SIGTERM, so a stop waits ten seconds and ends in SIGKILL | Open |
@@ -78,6 +78,7 @@ The consumers recover on their own, because a failed attempt is a retry rather t
 
 `pool_pre_ping=True` on every engine.
 Six call sites set the same options independently, which is the reason this went unnoticed in all six: a shared factory in `common/db.py` would make the setting a single decision rather than six identical ones, and is the better fix.
+This is deliberately deferred to the deployment work: a managed database's maintenance restarts make this a routine event there rather than a hand-made one, so the fix is verified against the failure it exists for.
 
 ---
 
@@ -234,6 +235,7 @@ A `try` around `produce()` that records the row as a permanent failure, sharing 
 A fake producer entry that raises on `produce()`, and one test.
 That classification cannot simply be reused, however: `permanent_errors` is matched against a delivery report's `code()`, while `produce()` raises an exception whose type this loop may not name, because it does not import the client.
 Closing this therefore settles an interface — a classifier handed in through `PollerConfig`, or a bare `except Exception` bounded by `max_attempts` — rather than only adding a `try`.
+This is deliberately deferred: nothing the services write comes near the size limit, so settling the interface now would fit it to a failure that only a hand-written row produces.
 
 ---
 
@@ -314,8 +316,9 @@ The two consumers now have the same shape: each names the events it has work for
 
 ## TD-012: Tests that assert on log lines depend on a fixture in another file having run first
 
-**Status**: Open.
+**Status**: Closed.
 **Identified**: 2026-09-16, during an adversarial review of the implementation.
+**Closed**: 2026-09-27.
 
 ### What is missing
 
@@ -330,6 +333,10 @@ The sibling assertion that no warning was logged passes for the same reason, wit
 ### What closing it takes
 
 A session-scoped, autouse fixture that installs the pipeline once, or `structlog.testing.capture_logs()` in place of `caplog`, as the observability tests already do.
+Replacing `caplog` was not enough on its own.
+The pipeline cached each logger on first use, and every test that starts the HTTP client calls `configure()` again, so a logger first used before that call kept processors that `capture_logs()` never reaches; under the full suite, the redelivery test captured nothing.
+The pipeline no longer caches loggers, which is what `configure()` already assumed when it replaced the root handler rather than adding one: that a second call reaches every logger.
+Both tests now use `capture_logs()`, and the one asserting that no warning was logged also asserts the two `event_handled` lines it did capture, so an empty capture fails instead of passing.
 
 ---
 
@@ -380,6 +387,7 @@ A dead-lettered order can only be recovered with hand-typed broker commands, and
 `DELETE` in the shape of `PATCH`: a locking read, `409` outside `PENDING`, `204` on success.
 A small script that consumes the dead-letter topic and republishes by original key and topic, selectable by event id.
 If the script is not built, design §5.6 should say what the manual procedure is instead.
+This is deliberately deferred: neither lies on the path an order takes from intake to reservation, and what the script would automate can be done today with the broker's own commands.
 
 ---
 
@@ -402,6 +410,7 @@ What is lost is the spans still queued in the batch exporter, the consumer's gro
 ### What closing it takes
 
 A signal handler that sets a flag, a loop condition that reads it, and `close()` on the consumer on the way out.
+This is deliberately deferred to the deployment work: a rolling deployment is what sends SIGTERM as a matter of routine, and the grace period the handler must fit within is set there.
 
 ---
 
