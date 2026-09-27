@@ -13,11 +13,11 @@ An entry is closed by a commit that removes the gap, not by deciding to remove i
 | TD-006 | The poller treats every failed send as permanent, so a broker outage quarantines healthy rows | **Closed** |
 | TD-007 | `docker compose up` on a fresh volume starts the pollers before any schema exists | **Closed** |
 | TD-008 | An oversized outbox row raises inside `produce()` and stops the poller | Open |
-| TD-009 | A message that is JSON but not an envelope is retried as a technical failure | Open |
+| TD-009 | A message that is JSON but not an envelope is retried as a technical failure | **Closed** |
 | TD-010 | No test runs two confirms, or two reservations of one item, concurrently | **Closed** |
 | TD-011 | The inventory consumer reserves stock for any event type on its topic | **Closed** |
 | TD-012 | Tests that assert on log lines depend on a fixture in another file having run first | Open |
-| TD-013 | The dead-letter and quarantine log lines do not say which message or row failed | Open |
+| TD-013 | The dead-letter and quarantine log lines do not say which message or row failed | **Closed** |
 | TD-014 | Two things the design describes do not exist: `DELETE /orders/{id}` and the re-injection script | Open |
 | TD-015 | No process handles SIGTERM, so a stop waits ten seconds and ends in SIGKILL | Open |
 | TD-016 | No test drives one order through both relays and both consumers | **Closed** |
@@ -239,8 +239,9 @@ Closing this therefore settles an interface — a classifier handed in through `
 
 ## TD-009: A message that is JSON but not an envelope is retried as a technical failure
 
-**Status**: Open.
+**Status**: Closed.
 **Identified**: 2026-09-16, during an adversarial review of the implementation.
+**Closed**: 2026-09-27.
 
 ### What is missing
 
@@ -255,6 +256,9 @@ The partition is blocked for up to fifteen seconds to reach an outcome that was 
 ### What closing it takes
 
 A shape check straight after parsing that raises `PermanentFailure`, and one parametrized test case per shape alongside the existing not-JSON test.
+`_parse_envelope` now judges the shape straight after decoding: a document that is not an object, has no string `event_type`, or has no `event_id` that parses as a UUID raises `PermanentFailure` and is dead-lettered on its first attempt.
+The dead-letter path calls the same function, so what counts as an envelope is decided in one place.
+A parametrized test sends five such shapes and asserts that none of them waits out the retry schedule.
 
 ---
 
@@ -331,8 +335,9 @@ A session-scoped, autouse fixture that installs the pipeline once, or `structlog
 
 ## TD-013: The dead-letter and quarantine log lines do not say which message or row failed
 
-**Status**: Open.
+**Status**: Closed.
 **Identified**: 2026-09-16, during an adversarial review of the implementation.
+**Closed**: 2026-09-27.
 
 ### What is missing
 
@@ -348,6 +353,10 @@ The recovery step of design §5.7 asks them to inspect "the error the poller log
 
 The message position and, where the envelope parsed, its id on the dead-letter line.
 One line per quarantined row, with its id and the broker's error name, on the poller.
+`event_dead_lettered` now carries the source topic, partition and offset, the event id when the envelope parsed and `null` when it did not, and the error message, which a permanent failure otherwise left only in the dead-letter headers.
+The poller writes `outbox_row_quarantined` once per quarantined row, with the row id, the aggregate id, the attempt count, and the broker's error code and name; the UPDATE returns the rows it touched, because the attempt limit is judged inside the statement.
+`outbox_publish_failed` stays one count per cycle, since it is the line that repeats for as long as the broker is down.
+Tests assert the fields of each line, and that a row still being retried produces no quarantine line.
 
 ---
 
