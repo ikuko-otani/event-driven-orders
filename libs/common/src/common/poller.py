@@ -148,7 +148,9 @@ def publish_batch(
             permanent = [
                 row_id for row_id, error in failed if error.code() in config.permanent_errors
             ]
-            session.execute(
+            # RETURNING, not a second query: the attempt limit is judged inside the
+            # UPDATE, so only the statement itself knows which rows it quarantined.
+            updated = session.execute(
                 update(outbox)
                 .where(outbox.id.in_([row_id for row_id, _ in failed]))
                 .values(
@@ -162,10 +164,29 @@ def publish_batch(
                         else_=None,
                     ),
                 )
+                .returning(
+                    outbox.id, outbox.aggregate_id, outbox.publish_attempts, outbox.quarantined_at
+                )
             )
 
-            # Quarantined rows leave the poller's sight for good, so the count that
-            # went is the one signal that they did (design §5.7).
+            # A quarantined row leaves the poller's sight for good, and design §5.7's
+            # recovery starts from the error logged for it, so each gets a line of its own.
+            errors = dict(failed)
+            for row_id, aggregate_id, attempts, quarantined_at in updated:
+                if quarantined_at is None:
+                    continue
+                logger.error(
+                    "outbox_row_quarantined",
+                    topic=config.topic,
+                    row_id=str(row_id),
+                    aggregate_id=str(aggregate_id),
+                    attempts=attempts,
+                    error_code=errors[row_id].code(),
+                    error_name=errors[row_id].name(),
+                )
+
+            # One line per failing cycle, quarantined or not. During a broker outage
+            # this is the line that repeats, so it stays a count, not a line per row.
             logger.warning(
                 "outbox_publish_failed",
                 topic=config.topic,
