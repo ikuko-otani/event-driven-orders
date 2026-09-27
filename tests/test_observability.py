@@ -52,6 +52,47 @@ def test_every_failed_attempt_is_reported_before_the_message_is_dead_lettered() 
     assert [entry["attempt"] for entry in logs[:4]] == [1, 2, 3, 4]
 
 
+def test_the_dead_letter_line_names_the_message_it_set_aside() -> None:
+    message = _message()
+
+    with structlog.testing.capture_logs() as logs:
+        handle_with_retry(
+            message,
+            session_factory=_unreachable_database,
+            consumer=FakeConsumer(),
+            producer=FakeProducer(),
+            processed_events=ProcessedEvent,
+            handler=lambda session, event: None,
+            config=CONFIG,
+            sleep=lambda delay: None,
+        )
+
+    line = logs[-1]
+    assert (line["topic"], line["partition"], line["offset"]) == ("orders.events", 7, 4242)
+    assert line["event_id"] == json.loads(message.body)["event_id"]
+
+
+def test_a_message_that_never_parsed_is_still_named_by_its_position() -> None:
+    message = FakeMessage(b"not an envelope", message_partition=3, message_offset=99)
+
+    with structlog.testing.capture_logs() as logs:
+        handle_with_retry(
+            message,
+            session_factory=_unreachable_database,
+            consumer=FakeConsumer(),
+            producer=FakeProducer(),
+            processed_events=ProcessedEvent,
+            handler=lambda session, event: None,
+            config=CONFIG,
+            sleep=lambda delay: None,
+        )
+
+    [line] = logs
+    assert (line["partition"], line["offset"]) == (3, 99)
+    assert line["event_id"] is None
+    assert line["error_class"] == "PermanentFailure"
+
+
 def test_a_line_written_inside_a_span_carries_the_trace_it_belongs_to() -> None:
     # A provider of its own, never the global one: the span only has to be real
     # enough to have a context, and nothing here should reach a collector.

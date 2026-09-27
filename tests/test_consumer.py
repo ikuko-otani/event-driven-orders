@@ -298,6 +298,42 @@ async def test_a_message_that_is_not_json_goes_straight_to_the_dead_letter_topic
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'["a", "list"]',
+        b'"a string"',
+        b'{"event_id": "0b6e3f1c-2d4a-4c8e-9f10-5a7b8c9d0e1f"}',
+        b'{"event_type": "OrderConfirmed"}',
+        b'{"event_type": "OrderConfirmed", "event_id": "not-a-uuid"}',
+    ],
+    ids=["list", "string", "no-event-type", "no-event-id", "event-id-not-a-uuid"],
+)
+async def test_json_that_is_not_an_envelope_goes_straight_to_the_dead_letter_topic(
+    body: bytes, sync_session_factory: Callable[[], Session]
+) -> None:
+    slept: list[float] = []
+    consumer = FakeConsumer()
+    producer = FakeProducer()
+    message = FakeMessage(body)
+
+    handle_with_retry(
+        message,
+        session_factory=sync_session_factory,
+        consumer=consumer,
+        producer=producer,
+        processed_events=ProcessedEvent,
+        handler=_recording_handler([]),
+        config=CONFIG,
+        sleep=slept.append,
+    )
+
+    assert slept == []
+    assert producer.messages[0][0] == "orders.events.inventory-worker.dlq"
+    assert consumer.committed == [message]
+
+
+@pytest.mark.asyncio
 async def test_the_dead_lettered_copy_carries_the_original_bytes_and_key(
     sync_session_factory: Callable[[], Session],
 ) -> None:
@@ -362,7 +398,7 @@ async def test_a_dead_letter_the_broker_refused_leaves_the_offset_uncommitted(
     consumer = FakeConsumer()
     message = _positioned(uuid.uuid4())
     producer = FakeProducer(
-        errors={message.message_key: FakeDeliveryError(KafkaError._MSG_TIMED_OUT)}
+        errors={message.message_key: FakeDeliveryError(KafkaError._MSG_TIMED_OUT, "_MSG_TIMED_OUT")}
     )
 
     with pytest.raises(RuntimeError, match="not acked"):

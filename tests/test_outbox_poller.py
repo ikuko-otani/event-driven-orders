@@ -3,6 +3,7 @@
 import json
 
 import pytest
+import structlog
 from confluent_kafka import KafkaError
 from factories import make_customer, make_item, make_order, make_sales_entity
 from fakes import FakeDeliveryError, FakeProducer
@@ -83,7 +84,9 @@ async def test_a_transient_send_failure_is_retried_on_the_next_cycle(
     db_session: AsyncSession, sync_session: Session
 ) -> None:
     order = await _seed_confirmed_order(db_session)
-    rejecting = FakeProducer({str(order.id): FakeDeliveryError(KafkaError._MSG_TIMED_OUT)})
+    rejecting = FakeProducer(
+        {str(order.id): FakeDeliveryError(KafkaError._MSG_TIMED_OUT, "_MSG_TIMED_OUT")}
+    )
 
     publish_batch(sync_session, outbox=Outbox, producer=rejecting, config=CONFIG)
 
@@ -102,7 +105,9 @@ async def test_a_permanent_send_failure_is_quarantined_and_never_sent_again(
     db_session: AsyncSession, sync_session: Session
 ) -> None:
     order = await _seed_confirmed_order(db_session)
-    rejecting = FakeProducer({str(order.id): FakeDeliveryError(KafkaError.MSG_SIZE_TOO_LARGE)})
+    rejecting = FakeProducer(
+        {str(order.id): FakeDeliveryError(KafkaError.MSG_SIZE_TOO_LARGE, "MSG_SIZE_TOO_LARGE")}
+    )
 
     publish_batch(sync_session, outbox=Outbox, producer=rejecting, config=CONFIG)
 
@@ -125,7 +130,9 @@ async def test_a_transient_failure_at_the_attempt_limit_is_quarantined(
     config = PollerConfig(
         topic="orders.events", max_attempts=1, permanent_errors=PERMANENT_DELIVERY_ERRORS
     )
-    rejecting = FakeProducer({str(order.id): FakeDeliveryError(KafkaError._MSG_TIMED_OUT)})
+    rejecting = FakeProducer(
+        {str(order.id): FakeDeliveryError(KafkaError._MSG_TIMED_OUT, "_MSG_TIMED_OUT")}
+    )
 
     publish_batch(sync_session, outbox=Outbox, producer=rejecting, config=config)
 
@@ -145,3 +152,46 @@ async def test_publish_batch_flushes_until_the_client_queue_is_empty(
 
     assert slow.flush_calls == 2
     assert sync_session.scalars(select(Outbox)).one().published_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_permanently_rejected_row_is_logged_by_id_and_error_name(
+    db_session: AsyncSession, sync_session: Session
+) -> None:
+    order = await _seed_confirmed_order(db_session)
+    rejecting = FakeProducer(
+        {str(order.id): FakeDeliveryError(KafkaError.MSG_SIZE_TOO_LARGE, "MSG_SIZE_TOO_LARGE")}
+    )
+
+    with structlog.testing.capture_logs() as logs:
+        publish_batch(sync_session, outbox=Outbox, producer=rejecting, config=CONFIG)
+
+    row = sync_session.scalars(select(Outbox)).one()
+    [line] = [entry for entry in logs if entry["event"] == "outbox_row_quarantined"]
+    assert (line["row_id"], line["aggregate_id"]) == (str(row.id), str(order.id))
+    assert (line["error_code"], line["error_name"]) == (
+        KafkaError.MSG_SIZE_TOO_LARGE,
+        "MSG_SIZE_TOO_LARGE",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_retried_row_is_logged_only_once_it_reaches_the_attempt_limit(
+    db_session: AsyncSession, sync_session: Session
+) -> None:
+    order = await _seed_confirmed_order(db_session)
+    config = PollerConfig(
+        topic="orders.events", max_attempts=2, permanent_errors=PERMANENT_DELIVERY_ERRORS
+    )
+    rejecting = FakeProducer(
+        {str(order.id): FakeDeliveryError(KafkaError._MSG_TIMED_OUT, "_MSG_TIMED_OUT")}
+    )
+
+    with structlog.testing.capture_logs() as first_cycle:
+        publish_batch(sync_session, outbox=Outbox, producer=rejecting, config=config)
+    with structlog.testing.capture_logs() as second_cycle:
+        publish_batch(sync_session, outbox=Outbox, producer=rejecting, config=config)
+
+    assert "outbox_row_quarantined" not in [entry["event"] for entry in first_cycle]
+    [line] = [entry for entry in second_cycle if entry["event"] == "outbox_row_quarantined"]
+    assert (line["attempts"], line["error_name"]) == (2, "_MSG_TIMED_OUT")
