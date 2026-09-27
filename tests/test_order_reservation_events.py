@@ -1,11 +1,11 @@
 """How order-api applies what inventory-worker sends back (design §5.7)."""
 
 import json
-import logging
 import uuid
 from collections.abc import Callable
 
 import pytest
+import structlog
 from factories import make_inventory_reply_event
 from fakes import FakeConsumer, FakeMessage
 from sqlalchemy import select
@@ -33,17 +33,17 @@ async def test_a_reservation_moves_the_order_to_reserved(
 
 @pytest.mark.asyncio
 async def test_an_event_for_an_unknown_order_changes_nothing_and_warns(
-    db_session: AsyncSession, sync_session: Session, caplog: pytest.LogCaptureFixture
+    db_session: AsyncSession, sync_session: Session
 ) -> None:
     event = await make_inventory_reply_event(db_session, sync_session)
     payload = {**event["payload"], "order_id": str(uuid.uuid4())}
 
-    with caplog.at_level(logging.WARNING):
+    with structlog.testing.capture_logs() as logs:
         handle_inventory_event(sync_session, {**event, "payload": payload})
     sync_session.commit()
 
     assert sync_session.scalars(select(Order)).one().status == "CONFIRMED"
-    assert "order_state_mismatch" in caplog.text
+    assert [entry["event"] for entry in logs] == ["order_state_mismatch"]
 
 
 @pytest.mark.asyncio
@@ -51,7 +51,6 @@ async def test_a_redelivered_reservation_is_applied_once(
     db_session: AsyncSession,
     sync_session: Session,
     sync_session_factory: Callable[[], Session],
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     event = await make_inventory_reply_event(db_session, sync_session)
     message = FakeMessage(json.dumps(event).encode())
@@ -59,7 +58,7 @@ async def test_a_redelivered_reservation_is_applied_once(
 
     # The same message twice, through the loop rather than the handler: the
     # dedup claim lives there, so calling the handler directly would not test it.
-    with caplog.at_level(logging.WARNING):
+    with structlog.testing.capture_logs() as logs:
         for _ in range(2):
             handle_message(
                 message,
@@ -72,7 +71,8 @@ async def test_a_redelivered_reservation_is_applied_once(
 
     assert sync_session.scalars(select(Order)).one().status == "RESERVED"
     assert len(list(sync_session.scalars(select(ProcessedEvent)))) == 1
-    assert "order_state_mismatch" not in caplog.text
+    # Both deliveries must be seen, or the absence of a warning proves nothing.
+    assert [entry["event"] for entry in logs] == ["event_handled", "event_handled"]
 
 
 @pytest.mark.asyncio

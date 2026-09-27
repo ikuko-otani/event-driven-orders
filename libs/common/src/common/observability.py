@@ -123,11 +123,11 @@ def configure(service: str) -> None:
 
     # structlog stops at wrap_for_formatter and hands its event dict to the
     # handler above instead of rendering it, which is what puts both sources
-    # through one renderer.
+    # through one renderer. Loggers are not cached: a cached logger keeps the
+    # processors it first saw, so a second configure() would never reach it.
     structlog.configure(
         processors=[*shared, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         logger_factory=structlog.stdlib.LoggerFactory(),
-        cache_logger_on_first_use=True,
     )
 
     # Both halves are installed together: a trace id is only useful because the
