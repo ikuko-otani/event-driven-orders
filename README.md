@@ -85,6 +85,8 @@ Once the stack is up:
 
 A one-shot service is hidden by `docker compose ps` once it has finished; `docker compose ps -a` lists it, and `Exited (0)` is its success state rather than a failure.
 
+[A walkthrough](docs/demo.md) drives both outcomes through the running stack — one order reserved, one refused for insufficient stock — with the commands and their real output.
+
 ## Repository layout
 
 | Path | Contents |
