@@ -96,6 +96,7 @@ A one-shot service is hidden by `docker compose ps` once it has finished; `docke
 | `libs/common` | what the two share: the envelope, the poller loop, the consumer loop, settings, logging and tracing |
 | `tests` | one suite for both services, run against real containers |
 | `scripts` | the seed and the smoke check |
+| `infra/terraform` | the Terraform for deploying the HTTP service to AWS (ADR-003): version pins and provider settings, no resources yet |
 
 The loops are shared code; the schemas are not.
 Each service owns its own `outbox` and `processed_events` tables, because each of them is both a producer and a consumer.
