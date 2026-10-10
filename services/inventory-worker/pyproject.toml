@@ -8,7 +8,7 @@ dependencies = [
     "asyncpg>=0.30",
     "common",
     "psycopg[binary]>=3.2",
-    "sqlalchemy[asyncio]>=2.0",
+    "sqlalchemy[asyncio]>=2.1.4",
 ]
 
 [tool.uv.sources]
