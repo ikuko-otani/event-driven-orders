@@ -10,11 +10,11 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           version: "0.11.9"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version-file: ".python-version"
       # --locked, not --frozen: a uv.lock that no longer matches pyproject.toml
@@ -28,11 +28,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           version: "0.11.9"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version-file: ".python-version"
       # The seed and the smoke run from the host: both import the two service
