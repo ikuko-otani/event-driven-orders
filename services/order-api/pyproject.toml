@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "HTTP service for order intake"
 requires-python = ">=3.12"
 dependencies = [
-    "alembic>=1.13",
+    "alembic>=1.20.0",
     "asyncpg>=0.30",
     "common",
     "fastapi>=0.115",
