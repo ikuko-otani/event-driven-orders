@@ -17,7 +17,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version-file: ".python-version"
-      - run: uv sync --frozen
+      # --locked, not --frozen: a uv.lock that no longer matches pyproject.toml
+      # fails the build here instead of being installed as it stands.
+      - run: uv sync --locked
       - run: uv run poe ci
   # A job of its own, not extra steps on `check`: this one builds images and
   # starts the whole stack, so it costs minutes where the unit checks cost
@@ -35,7 +37,7 @@ jobs:
           python-version-file: ".python-version"
       # The seed and the smoke run from the host: both import the two service
       # packages, and no single image contains both.
-      - run: uv sync --frozen
+      - run: uv sync --locked
       # A step of its own, so build time and start-up time are two numbers.
       - run: docker compose build
       # --wait returns once every service is running or healthy, and does not
