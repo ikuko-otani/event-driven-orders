@@ -1,0 +1,30 @@
+name: Security Audit
+
+# Weekly rather than on every push: a vulnerability published today would
+# otherwise turn every unrelated pull request red until someone upgrades.
+# Dependabot alerts cover the time between two runs.
+on:
+  schedule:
+    # Every Monday 00:00 UTC (09:00 JST)
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+# The audit only reads the repository, so the token gets nothing more.
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.9"
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+      # --locked audits exactly what uv.lock pins, and stops if the lock file
+      # no longer matches pyproject.toml instead of auditing a stale picture.
+      - run: uv sync --locked
+      - run: uv run pip-audit
