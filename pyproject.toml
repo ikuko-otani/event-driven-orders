@@ -4,13 +4,13 @@ members = ["services/*", "libs/*"]
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
-    "mypy>=1.11",
+    "mypy>=2.4.0",
     "pip-audit>=2.10.1",
     "poethepoet>=0.29",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
-    "ruff>=0.6",
-    "testcontainers[kafka,postgres,redis]>=4.8",
+    "ruff>=0.16.10",
+    "testcontainers[kafka,postgres,redis]>=4.15.0",
 ]
 
 [tool.ruff]
