@@ -1,0 +1,37 @@
+version: 2
+
+# Container images (Dockerfiles and compose.yaml) are deliberately not listed:
+# a major bump of Postgres or Redpanda can change on-disk formats or volume
+# paths, so those are upgraded by hand after reading the release notes.
+updates:
+  # Python packages, read from the workspace's single uv.lock. Two groups, so
+  # a month brings at most one pull request for runtime code and one for tools.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      production-dependencies:
+        dependency-type: "production"
+      development-dependencies:
+        dependency-type: "development"
+
+  # Actions used by every workflow, bumped together in one pull request.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # The AWS provider, within the range versions.tf allows; the lock file moves.
+  - package-ecosystem: "terraform"
+    directory: "/infra/terraform"
+    schedule:
+      interval: "monthly"
+    groups:
+      terraform:
+        patterns:
+          - "*"
