@@ -208,7 +208,7 @@ async def test_outbox_poller_index_only_covers_healthy_unpublished_rows(
                 "WHERE schemaname = 'orders' AND indexname = 'ix_outbox_unpublished'"
             )
         )
-    indexdef = result.scalar_one()
+    indexdef: str = result.scalar_one()
     assert "published_at IS NULL" in indexdef
     assert "quarantined_at IS NULL" in indexdef
 

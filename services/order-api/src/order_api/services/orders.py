@@ -22,7 +22,7 @@ tracer = trace.get_tracer(__name__)
 
 async def next_order_number(session: AsyncSession) -> str:
     result = await session.execute(select(func.nextval("orders.order_number_seq")))
-    value = result.scalar_one()
+    value: int = result.scalar_one()
     return f"ORD-{value:06d}"
 
 
