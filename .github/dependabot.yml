@@ -6,8 +6,11 @@ version: 2
 updates:
   # Python packages, read from the workspace's single uv.lock. Two groups, so
   # a month brings at most one pull request for runtime code and one for tools.
+  # lockfile-only: uv.lock decides the versions; pyproject.toml keeps its
+  # open lower bounds instead of being raised to each new release.
   - package-ecosystem: "uv"
     directory: "/"
+    versioning-strategy: "lockfile-only"
     schedule:
       interval: "monthly"
     groups:
