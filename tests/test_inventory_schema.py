@@ -132,5 +132,5 @@ async def test_inventory_outbox_index_is_independent_of_orders_outbox_index(
                 "WHERE schemaname = 'inventory' AND indexname = 'ix_outbox_unpublished'"
             )
         )
-    indexdef = result.scalar_one()
+    indexdef: str = result.scalar_one()
     assert "published_at IS NULL" in indexdef
