@@ -195,6 +195,9 @@ services:
     # Restarted on exit: nothing is lost when a poller dies, but nothing
     # restarts it either, so publication stays down until someone notices.
     restart: unless-stopped
+    # Long enough to finish the message or batch in hand after SIGTERM; left to
+    # the engine's default, a stop can arrive as a kill
+    stop_grace_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
@@ -226,6 +229,9 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     # Restarted on exit so the reservation outcome keeps being applied.
     restart: unless-stopped
+    # Long enough to finish the message or batch in hand after SIGTERM; left to
+    # the engine's default, a stop can arrive as a kill
+    stop_grace_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
@@ -247,6 +253,9 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     # Restarted on exit so reservations keep being made.
     restart: unless-stopped
+    # Long enough to finish the message or batch in hand after SIGTERM; left to
+    # the engine's default, a stop can arrive as a kill
+    stop_grace_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
@@ -276,6 +285,9 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     # Restarted on exit: the same singleton comes back, never a second one.
     restart: unless-stopped
+    # Long enough to finish the message or batch in hand after SIGTERM; left to
+    # the engine's default, a stop can arrive as a kill
+    stop_grace_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
