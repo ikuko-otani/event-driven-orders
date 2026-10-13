@@ -1,6 +1,9 @@
 """Unit tests for the outbox poller's publish cycle (design §5.4)."""
 
 import json
+import threading
+import time
+from collections.abc import Callable
 
 import pytest
 import structlog
@@ -12,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from common.kafka import PERMANENT_DELIVERY_ERRORS
-from common.poller import PollerConfig, publish_batch
+from common.poller import PollerConfig, publish_batch, run_forever
 from order_api.events import order_confirmed_outbox
 from order_api.models import Order, Outbox
 
@@ -195,3 +198,24 @@ async def test_a_retried_row_is_logged_only_once_it_reaches_the_attempt_limit(
     assert "outbox_row_quarantined" not in [entry["event"] for entry in first_cycle]
     [line] = [entry for entry in second_cycle if entry["event"] == "outbox_row_quarantined"]
     assert (line["attempts"], line["error_name"]) == (2, "_MSG_TIMED_OUT")
+
+
+@pytest.mark.asyncio
+async def test_a_stop_request_wakes_an_idle_poller_at_once(
+    sync_session_factory: Callable[[], Session],
+) -> None:
+    stop = threading.Event()
+    # Ask to stop from another thread once the loop has gone idle on an empty
+    # outbox, the way a signal arrives while the process is waiting
+    threading.Timer(0.5, stop.set).start()
+    started = time.monotonic()
+
+    run_forever(
+        sync_session_factory,
+        outbox=Outbox,
+        producer=FakeProducer(),
+        config=PollerConfig(topic="orders.events", poll_interval=60.0),
+        stop=stop,
+    )
+
+    assert time.monotonic() - started < 10
