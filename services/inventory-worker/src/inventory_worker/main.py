@@ -5,13 +5,13 @@ group it reads as, its dedup ledger and its handler — so the loop in
 common.consumer stays free of anything inventory-worker knows.
 """
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from common.consumer import ConsumerConfig, run_forever
+from common.db import make_sync_engine
 from common.kafka import build_consumer, build_producer
 from common.observability import configure
-from common.settings import DatabaseSettings, KafkaSettings
+from common.settings import KafkaSettings
 from inventory_worker.handlers import handle_order_confirmed
 from inventory_worker.models import ProcessedEvent
 
@@ -29,7 +29,7 @@ def run() -> None:
     redelivery starts from a clean transaction (design §5.2).
     """
     configure("inventory-worker")
-    engine = create_engine(DatabaseSettings().sync_url)
+    engine = make_sync_engine()
     run_forever(
         sessionmaker(engine),
         consumer=build_consumer(KafkaSettings(), CONFIG),
