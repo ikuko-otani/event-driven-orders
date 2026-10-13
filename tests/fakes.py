@@ -114,7 +114,7 @@ class FakeConsumer:
     poll() hands back the scripted results in order, then None once the script
     is exhausted — the same "nothing to deliver" a real consumer reports on an
     idle timeout. It offers no way to stop the loop, because the real client
-    offers none either: the loop ends when something raises.
+    offers none either: the loop ends on its stop event, or when something raises.
     """
 
     def __init__(self, polls: list[Message | None] | None = None) -> None:

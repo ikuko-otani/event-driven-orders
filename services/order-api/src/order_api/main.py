@@ -3,9 +3,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from common.db import make_async_engine
 from common.observability import adopt_loggers, configure
 from order_api.cache import make_redis_client
-from order_api.db import make_engine, make_sessionmaker
+from order_api.db import make_sessionmaker
 from order_api.routers.orders import router as orders_router
 
 
@@ -20,7 +21,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # pipeline (§6.6). Its two lines before this point are text, and stay text.
     adopt_loggers("uvicorn", "uvicorn.access", "uvicorn.error")
 
-    engine = make_engine()
+    engine = make_async_engine()
     app.state.sessionmaker = make_sessionmaker(engine)
     app.state.redis = make_redis_client()
     yield

@@ -1,6 +1,7 @@
 """The consume loop's judgement, with no broker running (design §7.7)."""
 
 import json
+import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
@@ -178,6 +179,7 @@ async def test_the_loop_dead_letters_a_failing_message_and_keeps_going(
             processed_events=ProcessedEvent,
             handler=handler,
             config=CONFIG,
+            stop=threading.Event(),
             sleep=lambda _: None,
         )
 
@@ -202,9 +204,41 @@ async def test_a_broker_error_ends_the_loop_without_committing_the_offset(
             processed_events=ProcessedEvent,
             handler=_recording_handler([]),
             config=CONFIG,
+            stop=threading.Event(),
         )
 
     assert consumer.committed == []
+    assert consumer.closed
+
+
+@pytest.mark.asyncio
+async def test_a_stop_request_ends_the_loop_after_the_message_in_hand(
+    sync_session_factory: Callable[[], Session],
+) -> None:
+    stop = threading.Event()
+    seen: list[dict[str, Any]] = []
+    record = _recording_handler(seen)
+
+    def handler(session: Session, envelope: dict[str, Any]) -> None:
+        """Handle the message, receiving the stop request part-way through it."""
+        record(session, envelope)
+        stop.set()
+
+    first = _message(uuid.uuid4())
+    consumer = FakeConsumer([first, _message(uuid.uuid4())])
+
+    run_forever(
+        sync_session_factory,
+        consumer=consumer,
+        producer=FakeProducer(),
+        processed_events=ProcessedEvent,
+        handler=handler,
+        config=CONFIG,
+        stop=stop,
+    )
+
+    assert len(seen) == 1
+    assert consumer.committed == [first]
     assert consumer.closed
 
 

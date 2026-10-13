@@ -7,7 +7,7 @@ loop would buy nothing.
 """
 
 import json
-import time
+import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -204,15 +204,21 @@ def run_forever(
     outbox: type[OutboxMixin],
     producer: Producer,
     config: PollerConfig,
+    stop: threading.Event,
 ) -> None:
-    """Drain the outbox forever, sleeping only when the last batch ran short.
+    """Drain the outbox until asked to stop, sleeping only when a batch ran short.
 
     A full batch means a backlog is still draining, so the next cycle starts
     at once; a short one means the table is caught up, and polling harder
     would only add load without lowering latency.
+
+    The idle wait is the stop event's own wait, so a request that arrives while
+    the loop sleeps wakes it at once; a batch in hand is always committed first.
     """
-    while True:
+    # Checked between batches only: a batch in hand is always marked first
+    while not stop.is_set():
         with session_factory() as session:
             selected = publish_batch(session, outbox=outbox, producer=producer, config=config)
+        # Caught up, so wait; a stop request ends the wait early
         if selected < config.batch_size:
-            time.sleep(config.poll_interval)
+            stop.wait(config.poll_interval)

@@ -5,13 +5,14 @@ group it reads as, its dedup ledger and its handler — so the loop in
 common.consumer stays free of anything order-api knows.
 """
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from common.consumer import ConsumerConfig, run_forever
+from common.db import make_sync_engine
 from common.kafka import build_consumer, build_producer
 from common.observability import configure
-from common.settings import DatabaseSettings, KafkaSettings
+from common.settings import KafkaSettings
+from common.shutdown import stop_on_sigterm
 from order_api.handlers import handle_inventory_event
 from order_api.models import ProcessedEvent
 
@@ -29,7 +30,9 @@ def run() -> None:
     leave two engine configurations to keep in agreement (design §5.2).
     """
     configure("order-api-consumer")
-    engine = create_engine(DatabaseSettings().sync_url)
+    # A container stop is answered by finishing the unit in hand, not by a kill
+    stop = stop_on_sigterm()
+    engine = make_sync_engine()
     run_forever(
         sessionmaker(engine),
         consumer=build_consumer(KafkaSettings(), CONFIG),
@@ -37,6 +40,7 @@ def run() -> None:
         processed_events=ProcessedEvent,
         handler=handle_inventory_event,
         config=CONFIG,
+        stop=stop,
     )
 
 
