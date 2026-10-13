@@ -12,6 +12,7 @@ from common.db import make_sync_engine
 from common.kafka import build_consumer, build_producer
 from common.observability import configure
 from common.settings import KafkaSettings
+from common.shutdown import stop_on_sigterm
 from order_api.handlers import handle_inventory_event
 from order_api.models import ProcessedEvent
 
@@ -29,6 +30,8 @@ def run() -> None:
     leave two engine configurations to keep in agreement (design §5.2).
     """
     configure("order-api-consumer")
+    # A container stop is answered by finishing the unit in hand, not by a kill
+    stop = stop_on_sigterm()
     engine = make_sync_engine()
     run_forever(
         sessionmaker(engine),
@@ -37,6 +40,7 @@ def run() -> None:
         processed_events=ProcessedEvent,
         handler=handle_inventory_event,
         config=CONFIG,
+        stop=stop,
     )
 
 
