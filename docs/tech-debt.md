@@ -6,7 +6,7 @@ An entry is closed by a commit that removes the gap, not by deciding to remove i
 | ID | Summary | Status |
 |---|---|---|
 | TD-001 | The retry path emits no log line, so a retrying consumer is unobservable | **Closed** |
-| TD-002 | No engine validates a pooled connection before use | Open |
+| TD-002 | No engine validates a pooled connection before use | **Closed** |
 | TD-003 | A poller that exits is never restarted | **Closed** |
 | TD-004 | A trace stops at the broker, so one order's work is several traces | Open |
 | TD-005 | A write endpoint answers before its transaction commits, and caches the answer first | **Closed** |
@@ -19,7 +19,7 @@ An entry is closed by a commit that removes the gap, not by deciding to remove i
 | TD-012 | Tests that assert on log lines depend on a fixture in another file having run first | **Closed** |
 | TD-013 | The dead-letter and quarantine log lines do not say which message or row failed | **Closed** |
 | TD-014 | Two things the design describes do not exist: `DELETE /orders/{id}` and the re-injection script | Open |
-| TD-015 | No process handles SIGTERM, so a stop waits ten seconds and ends in SIGKILL | Open |
+| TD-015 | No process handles SIGTERM, so a stop waits ten seconds and ends in SIGKILL | **Closed** |
 | TD-016 | No test drives one order through both relays and both consumers | **Closed** |
 
 ---
@@ -53,8 +53,9 @@ The silence this entry describes is gone: the 56 seconds that produced one line 
 
 ## TD-002: No engine validates a pooled connection before use
 
-**Status**: Open.
+**Status**: Closed.
 **Identified**: 2026-09-11, after restarting the database underneath a running stack.
+**Closed**: 2026-10-13.
 
 ### What is missing
 
@@ -79,6 +80,9 @@ The consumers recover on their own, because a failed attempt is a retry rather t
 `pool_pre_ping=True` on every engine.
 Six call sites set the same options independently, which is the reason this went unnoticed in all six: a shared factory in `common/db.py` would make the setting a single decision rather than six identical ones, and is the better fix.
 This is deliberately deferred to the deployment work: a managed database's maintenance restarts make this a routine event there rather than a hand-made one, so the fix is verified against the failure it exists for.
+Every resident process now builds its engine through `common.db`, whose two factories set `pool_pre_ping=True`, so the setting is one decision rather than five.
+A test terminates a pooled connection from the server side, as a restart does, and the next checkout is handed a fresh connection instead of the dead one.
+The two Alembic environments and the two scripts keep their own engines: each opens one connection and exits, so there is no pool to go stale.
 
 ---
 
@@ -393,8 +397,9 @@ This is deliberately deferred: neither lies on the path an order takes from inta
 
 ## TD-015: No process handles SIGTERM, so a stop waits ten seconds and ends in SIGKILL
 
-**Status**: Open.
+**Status**: Closed.
 **Identified**: 2026-09-11, while stopping the stack after exercising the failure paths; registered 2026-09-16.
+**Closed**: 2026-10-13.
 
 ### What is missing
 
@@ -411,6 +416,11 @@ What is lost is the spans still queued in the batch exporter, the consumer's gro
 
 A signal handler that sets a flag, a loop condition that reads it, and `close()` on the consumer on the way out.
 This is deliberately deferred to the deployment work: a rolling deployment is what sends SIGTERM as a matter of routine, and the grace period the handler must fit within is set there.
+`common.shutdown.stop_on_sigterm` turns SIGTERM into an event that both loops read between units of work; the poller's idle wait is the event's own wait, so a request that arrives during a sleep ends it at once.
+Measured against the running stack, each of the four processes exits with status 0 between one and three seconds after the signal.
+The grace period is stated in `compose.yaml` (`stop_grace_period: 10s`) rather than left to the engine: the engine on the development machine defaulted to one second, which turned every stop into a kill even with the handler in place.
+A signal that arrives before the handler is installed still ends the process at once, which is harmless, because no work has been taken yet.
+A message still inside its retry schedule can outlast the grace period and be killed; that loses nothing, because its offset is not yet committed and it is delivered again.
 
 ---
 
