@@ -8,6 +8,7 @@ purpose — the Kafka consumer blocks, exactly as the producer does.
 
 import json
 import random
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -424,18 +425,24 @@ def run_forever(
     processed_events: type[ProcessedEventMixin],
     handler: Handler,
     config: ConsumerConfig,
+    stop: threading.Event,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    """Consume the topic until something stops the process, one message at a time.
+    """Consume the topic one message at a time, until asked to stop.
 
     A None from poll() is the ordinary idle case, not an error. Returning to
     poll() promptly is itself a requirement: a consumer that stays silent for
     longer than max.poll.interval.ms is evicted from its group and its
     partitions are handed to someone else (design §5.5).
+
+    stop is read between messages, never during one, so the message in hand is
+    always finished first. Closing the consumer on the way out hands its
+    partitions back to the group at once, instead of after a session timeout.
     """
     consumer.subscribe([config.topic])
     try:
-        while True:
+        # Checked only here, between messages: the one in hand is never cut short
+        while not stop.is_set():
             message = consumer.poll(config.poll_timeout)
             if message is None:
                 continue
