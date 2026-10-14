@@ -80,3 +80,22 @@ resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
+
+# The private subnets' table holds no routes, only the implicit local
+# one, so the database has no way out of the VPC and none in
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "${var.project}-private"
+  }
+}
+
+# Attached explicitly, so the private subnets never fall back on the
+# VPC's main table, which a route added outside Terraform would reach
+resource "aws_route_table_association" "private" {
+  count = 2
+
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
