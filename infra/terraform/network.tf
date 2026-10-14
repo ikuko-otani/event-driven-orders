@@ -48,3 +48,35 @@ resource "aws_subnet" "private" {
     Name = "${var.project}-private-${count.index}"
   }
 }
+
+# The VPC's one door to the internet
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = var.project
+  }
+}
+
+# Anything not addressed inside the VPC leaves through that door; the
+# VPC's own range is routed locally without being listed here
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = {
+    Name = "${var.project}-public"
+  }
+}
+
+# A route table does nothing until a subnet is attached to it
+resource "aws_route_table_association" "public" {
+  count = 2
+
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
