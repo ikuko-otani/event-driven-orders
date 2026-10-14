@@ -21,3 +21,30 @@ resource "aws_vpc" "main" {
     Name = var.project
   }
 }
+
+# Public half, one per AZ: the load balancer and the tasks
+resource "aws_subnet" "public" {
+  count = 2
+
+  vpc_id            = aws_vpc.main.id
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  cidr_block        = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index)
+
+  tags = {
+    Name = "${var.project}-public-${count.index}"
+  }
+}
+
+# Private half, one per AZ: the database only. Numbered from 10, so a
+# third AZ's public subnet never collides with them
+resource "aws_subnet" "private" {
+  count = 2
+
+  vpc_id            = aws_vpc.main.id
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  cidr_block        = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index + 10)
+
+  tags = {
+    Name = "${var.project}-private-${count.index}"
+  }
+}
