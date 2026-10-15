@@ -12,3 +12,25 @@ resource "aws_security_group" "alb" {
     Name = "${var.project}-alb"
   }
 }
+
+# The order-api tasks: reachable from the load balancer only
+resource "aws_security_group" "task" {
+  name        = "${var.project}-task"
+  description = "order-api tasks: traffic from the load balancer only"
+  vpc_id      = aws_vpc.main.id
+
+  tags = {
+    Name = "${var.project}-task"
+  }
+}
+
+# The database: reachable from the tasks only, and with no way out
+resource "aws_security_group" "db" {
+  name        = "${var.project}-db"
+  description = "PostgreSQL: connections from the order-api tasks only"
+  vpc_id      = aws_vpc.main.id
+
+  tags = {
+    Name = "${var.project}-db"
+  }
+}
