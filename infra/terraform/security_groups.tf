@@ -57,3 +57,24 @@ resource "aws_vpc_security_group_egress_rule" "alb_to_task" {
   from_port                    = 8000
   to_port                      = 8000
 }
+
+# The tasks accept traffic from the load balancer alone, on the app's port
+resource "aws_vpc_security_group_ingress_rule" "task_from_alb" {
+  security_group_id            = aws_security_group.task.id
+  description                  = "From the load balancer"
+  referenced_security_group_id = aws_security_group.alb.id
+  ip_protocol                  = "tcp"
+  from_port                    = 8000
+  to_port                      = 8000
+}
+
+# HTTPS out to AWS's public endpoints (image pulls, secrets, logs),
+# since there is no NAT gateway and no VPC endpoint to go through
+resource "aws_vpc_security_group_egress_rule" "task_https" {
+  security_group_id = aws_security_group.task.id
+  description       = "HTTPS to AWS service endpoints"
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+}
