@@ -55,3 +55,11 @@ data "aws_iam_policy_document" "task_execution" {
     resources = [aws_db_instance.main.master_user_secret[0].secret_arn]
   }
 }
+
+# Attach the rights as an inline policy, so they live and die with the
+# role and cannot be attached to any other
+resource "aws_iam_role_policy" "task_execution" {
+  name   = "${var.project}-task-execution"
+  role   = aws_iam_role.task_execution.id
+  policy = data.aws_iam_policy_document.task_execution.json
+}
