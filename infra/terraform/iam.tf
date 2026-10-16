@@ -13,3 +13,10 @@ data "aws_iam_policy_document" "task_execution_assume" {
     }
   }
 }
+
+# The role itself, named under the project prefix that the IAM rights
+# of the deploying user are scoped to
+resource "aws_iam_role" "task_execution" {
+  name               = "${var.project}-task-execution"
+  assume_role_policy = data.aws_iam_policy_document.task_execution_assume.json
+}
