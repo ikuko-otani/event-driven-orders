@@ -30,3 +30,17 @@ resource "aws_lb_target_group" "api" {
     matcher = "200"
   }
 }
+
+# Port 80 on the load balancer, every request passed to the tasks;
+# plain HTTP, since a certificate needs a domain this deployment lacks
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  # One rule for everything: no paths are split off to anywhere else
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
+  }
+}
