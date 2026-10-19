@@ -36,3 +36,17 @@ locals {
     valueFrom = "${aws_db_instance.main.master_user_secret[0].secret_arn}:password::"
   }]
 }
+
+# How every container in this file logs: all into the one group, where
+# ECS names each stream prefix/container/task, so the container name
+# already tells them apart
+locals {
+  log_configuration = {
+    logDriver = "awslogs"
+    options = {
+      "awslogs-group"         = aws_cloudwatch_log_group.ecs.name
+      "awslogs-region"        = var.aws_region
+      "awslogs-stream-prefix" = var.project
+    }
+  }
+}
