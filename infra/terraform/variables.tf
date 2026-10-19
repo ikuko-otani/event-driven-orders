@@ -24,3 +24,11 @@ variable "allowed_cidrs" {
     error_message = "Give at least one CIDR block, e.g. your own IP as x.x.x.x/32."
   }
 }
+
+# Which pushed image the tasks run. No default on purpose: a new tag is
+# what makes the service roll onto a new image, so every plan and apply
+# names the one it means.
+variable "image_tag" {
+  description = "Tag of the order-api image in ECR, e.g. the short git commit SHA."
+  type        = string
+}
