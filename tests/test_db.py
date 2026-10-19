@@ -1,7 +1,7 @@
 """A pooled connection the server has dropped must never reach the caller."""
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import URL, create_engine, text
 from sqlalchemy.pool import NullPool
 
 from common.db import make_sync_engine
@@ -9,7 +9,7 @@ from common.db import make_sync_engine
 
 @pytest.mark.asyncio
 async def test_a_connection_the_server_dropped_is_replaced_before_use(
-    migrated_database: str,
+    migrated_database: URL,
 ) -> None:
     engine = make_sync_engine()
     with engine.connect() as connection:

@@ -1,6 +1,7 @@
 """Database connection settings, read from the environment."""
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy import URL
 
 
 class DatabaseSettings(BaseSettings):
@@ -19,14 +20,22 @@ class DatabaseSettings(BaseSettings):
     password: str = "app"
 
     @property
-    def sync_url(self) -> str:
-        return (
-            f"postgresql+psycopg://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+    def sync_url(self) -> URL:
+        # Each part stays a separate field, so a generated password containing
+        # characters such as % # : never has to survive being parsed out of a string.
+        return URL.create(
+            "postgresql+psycopg",
+            username=self.user,
+            password=self.password,
+            host=self.host,
+            port=self.port,
+            database=self.name,
         )
 
     @property
-    def async_url(self) -> str:
-        return self.sync_url.replace("postgresql+psycopg://", "postgresql+asyncpg://", 1)
+    def async_url(self) -> URL:
+        # Same fields, another driver: the two forms cannot drift apart.
+        return self.sync_url.set(drivername="postgresql+asyncpg")
 
 
 class RedisSettings(BaseSettings):

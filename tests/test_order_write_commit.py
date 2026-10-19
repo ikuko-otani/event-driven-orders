@@ -7,7 +7,7 @@ import pytest_asyncio
 from factories import make_customer, make_item, make_sales_entity
 from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis
-from sqlalchemy import func, select, text
+from sqlalchemy import URL, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from order_api.main import app
@@ -45,7 +45,7 @@ async def refuse_commit(db_session: AsyncSession) -> AsyncGenerator[None, None]:
 
 @pytest_asyncio.fixture
 async def unguarded_client(
-    migrated_database: str, configured_redis: str
+    migrated_database: URL, configured_redis: str
 ) -> AsyncGenerator[AsyncClient, None]:
     """A client that turns an unhandled exception into a 500, as a real one would.
 
