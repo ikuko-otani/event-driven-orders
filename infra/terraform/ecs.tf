@@ -73,3 +73,18 @@ locals {
     stopTimeout = 10
   }
 }
+
+# The response cache beside the app (design §4.4). Only a cache: the
+# database's unique constraint stays the authority, so losing it with
+# the task loses nothing that matters
+locals {
+  redis_container = {
+    name             = "redis"
+    logConfiguration = local.log_configuration
+    stopTimeout      = 10
+
+    # The tag Compose runs, from AWS's mirror of the official images,
+    # which keeps pulls clear of Docker Hub's anonymous rate limit
+    image = "public.ecr.aws/docker/library/redis:8.10.1-alpine"
+  }
+}
