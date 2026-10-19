@@ -13,3 +13,5 @@ goal-prompt-template.md
 docs/learning-notes
 docs/interview-prep
 docs/reviews
+# Terraform's providers and state are never needed by a service image.
+infra
