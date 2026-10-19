@@ -50,3 +50,26 @@ locals {
     }
   }
 }
+
+# The order-api container; the image's own CMD starts uvicorn
+locals {
+  api_container = {
+    name             = "api"
+    image            = local.image
+    portMappings     = [{ containerPort = 8000, protocol = "tcp" }]
+    logConfiguration = local.log_configuration
+
+    # Redis shares the task's network, so it is on localhost; the
+    # database values are the ones every task here uses
+    environment = concat(local.db_environment, [{ name = "REDIS_HOST", value = "localhost" }])
+    secrets     = local.db_secrets
+
+    # Started after Redis and stopped before it, so no request meets a
+    # cache that is not there yet, or no longer is
+    dependsOn = [{ containerName = "redis", condition = "START" }]
+
+    # Ten seconds from SIGTERM to SIGKILL, written down rather than
+    # left to the 30 s default
+    stopTimeout = 10
+  }
+}
