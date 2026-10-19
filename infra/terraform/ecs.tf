@@ -88,3 +88,25 @@ locals {
     image = "public.ecr.aws/docker/library/redis:8.10.1-alpine"
   }
 }
+
+# The task the service keeps running: the app and its cache together,
+# on the smallest size Fargate offers
+resource "aws_ecs_task_definition" "api" {
+  family                   = "${var.project}-api"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "256"
+  memory                   = "512"
+
+  # The image is built on an x86 machine; said explicitly, so a change
+  # of default can never start it on ARM
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  # ECS starts the task under this role; the app itself gets none
+  execution_role_arn = aws_iam_role.task_execution.arn
+
+  container_definitions = jsonencode([local.api_container, local.redis_container])
+}
