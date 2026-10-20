@@ -164,3 +164,22 @@ resource "aws_ecs_task_definition" "oneshot" {
   execution_role_arn    = aws_iam_role.task_execution.arn
   container_definitions = jsonencode([each.value])
 }
+
+# Keeps one copy of the app's task running: a stopped task is
+# replaced, and a new image tag rolls the service onto it
+resource "aws_ecs_service" "api" {
+  name            = "${var.project}-api"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.api.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  # Public subnets with a public IP: with no NAT gateway, this is how
+  # the task reaches ECR, Secrets Manager and CloudWatch Logs. Its
+  # security group still lets in nothing but the load balancer
+  network_configuration {
+    subnets          = aws_subnet.public[*].id
+    security_groups  = [aws_security_group.task.id]
+    assign_public_ip = true
+  }
+}
