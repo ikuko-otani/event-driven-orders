@@ -23,7 +23,7 @@ from confluent_kafka import Consumer
 from confluent_kafka.admin import AdminClient, NewTopic  # type: ignore[attr-defined]
 from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import URL, Engine, create_engine, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -56,7 +56,7 @@ def postgres_container() -> Generator[PostgresContainer, None, None]:
 
 
 @pytest.fixture(scope="session")
-def migrated_database(postgres_container: PostgresContainer) -> str:
+def migrated_database(postgres_container: PostgresContainer) -> URL:
     """Point DB_* at the container, run every migration once, return the async URL.
 
     The container's coordinates are published as environment variables rather
@@ -180,7 +180,7 @@ def kafka_consumer(configured_kafka: str) -> Generator[Consumer, None, None]:
 
 
 @pytest_asyncio.fixture
-async def engine(migrated_database: str) -> AsyncGenerator[AsyncEngine, None]:
+async def engine(migrated_database: URL) -> AsyncGenerator[AsyncEngine, None]:
     """A fresh async engine per test, so no connection state leaks between tests."""
     engine = create_async_engine(migrated_database)
     yield engine
@@ -234,7 +234,7 @@ async def db_session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
 
 @pytest_asyncio.fixture
 async def api_client(
-    migrated_database: str, configured_redis: str
+    migrated_database: URL, configured_redis: str
 ) -> AsyncGenerator[AsyncClient, None]:
     """An HTTP client wired to the real app, with the app's own lifespan run around it."""
     async with app.router.lifespan_context(app):
@@ -244,7 +244,7 @@ async def api_client(
 
 
 @pytest.fixture
-def sync_engine(migrated_database: str) -> Generator[Engine, None, None]:
+def sync_engine(migrated_database: URL) -> Generator[Engine, None, None]:
     """A synchronous engine per test: the poller and the consumers are sync processes."""
     engine = create_engine(DatabaseSettings().sync_url)
     yield engine
