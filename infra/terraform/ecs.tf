@@ -127,3 +127,20 @@ locals {
     ]
   }
 }
+
+# Each job's container: the app's image with the job's command, and
+# the same database values the app uses. No Redis beside it: neither
+# job serves a request, so neither reads the cache
+locals {
+  oneshot_containers = {
+    for name, command in local.oneshot_commands : name => {
+      name             = name
+      image            = local.image
+      command          = command
+      environment      = local.db_environment
+      secrets          = local.db_secrets
+      logConfiguration = local.log_configuration
+      stopTimeout      = 10
+    }
+  }
+}
