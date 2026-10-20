@@ -144,3 +144,23 @@ locals {
     }
   }
 }
+
+# One task definition per job, so run-task names the job by family
+# alone; the same size and platform as the app's task
+resource "aws_ecs_task_definition" "oneshot" {
+  for_each = local.oneshot_containers
+
+  family                   = "${var.project}-${each.key}"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "256"
+  memory                   = "512"
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  execution_role_arn    = aws_iam_role.task_execution.arn
+  container_definitions = jsonencode([each.value])
+}
