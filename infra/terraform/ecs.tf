@@ -110,3 +110,20 @@ resource "aws_ecs_task_definition" "api" {
 
   container_definitions = jsonencode([local.api_container, local.redis_container])
 }
+
+# The jobs a deploy runs once, before the app is first used: the
+# schema, then the master data. Each gets a task definition of its own,
+# so run-task needs no command override. Only the orders schema:
+# inventory-worker is not deployed
+locals {
+  oneshot_commands = {
+    migrate = [
+      "uv", "run", "--no-sync", "--package", "order-api",
+      "alembic", "-c", "services/order-api/alembic.ini", "upgrade", "head",
+    ]
+    seed = [
+      "uv", "run", "--no-sync", "--package", "order-api",
+      "python", "scripts/seed_orders.py",
+    ]
+  }
+}
