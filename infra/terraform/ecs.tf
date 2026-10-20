@@ -182,4 +182,17 @@ resource "aws_ecs_service" "api" {
     security_groups  = [aws_security_group.task.id]
     assign_public_ip = true
   }
+
+  # Registers each task's IP in the target group on the app's port, so
+  # the load balancer sends requests only to tasks passing /health
+  load_balancer {
+    target_group_arn = aws_lb_target_group.api.arn
+    container_name   = "api"
+    container_port   = 8000
+  }
+
+  # Created only once the listener exists, since ECS refuses a target
+  # group no load balancer uses, and once the role may pull the image
+  # and read the secret, so the first task does not start and fail
+  depends_on = [aws_lb_listener.http, aws_iam_role_policy.task_execution]
 }
