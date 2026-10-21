@@ -2,9 +2,8 @@
 
 ## Status
 
-**Proposed** (draft — 2026-07-18).
-To be finalized when the deployment is implemented (planned October 2026, see domain-design §7);
-the fallback trigger below is part of the proposal.
+**Accepted** (2026-10-21; proposed 2026-07-18).
+The deployment was built on ECS Fargate as proposed, and the App Runner fallback was not needed.
 
 ## Context
 
@@ -16,8 +15,7 @@ inventory-worker, the outbox pollers, and the broker run in local Compose only, 
 Deploying a broker plus consumers would multiply infrastructure cost and Terraform surface without changing what the deployment demonstrates — the event-driven machinery is exercised locally and in CI (§2), where it is reproducible for free.
 
 A public write endpoint with no authentication is a real cost and abuse surface even for a demo.
-This ADR does not settle it: when the deployment is implemented, authentication, rate limiting, and demo-window protection (or keeping the endpoint up only during demos via the destroy lifecycle) are decided then.
-Recorded here so the gap is explicit rather than overlooked.
+The proposal left it open, to be settled when the deployment was built; the Decision below settles it.
 
 Deployment shape candidates for order-api, from most to least self-managed:
 
@@ -28,12 +26,31 @@ Deployment shape candidates for order-api, from most to least self-managed:
 
 The database is **RDS PostgreSQL** in a private subnet in every variant; it is not part of this decision.
 
-## Decision (proposed)
+## Decision
 
-- **Primary: ECS Fargate** — one Fargate service for order-api behind an ALB, RDS PostgreSQL in a private subnet, all provisioned by Terraform (VPC, subnets, security groups, IAM task/execution roles, ECR, CloudWatch Logs).
-- **Documented fallback: App Runner** — if the implementation exceeds its time box, the deployment falls back to an App Runner service (same container image, same RDS, VPC connector for database egress).
+- **Primary: ECS Fargate** — one Fargate service for order-api behind an ALB, RDS PostgreSQL in a private subnet, all provisioned by Terraform (VPC, subnets, security groups, the task execution role, ECR, CloudWatch Logs).
+- **Documented fallback: App Runner** (not used) — if the implementation exceeds its time box, the deployment falls back to an App Runner service (same container image, same RDS, VPC connector for database egress).
   The fallback is a scope reduction, not a redesign: the image and the Terraform-managed RDS carry over.
 - **The broker is not deployed** — Kafka remains local Compose; production assumption documented in ADR-001.
+
+What the implementation settled:
+
+- **Endpoint protection: an address allow-list and the destroy lifecycle, not authentication.**
+  The load balancer accepts port 80 only from the CIDR blocks in `allowed_cidrs`, a variable with no default, so every `plan` and `apply` names who may connect.
+  Outside a demo period the stack does not exist.
+  The endpoint is therefore never open to the internet at large, which is the exposure domain-design §7 makes authentication a prerequisite for; authentication itself stays deferred with the rest of the authenticated principal.
+- **Plain HTTP.**
+  A certificate needs a domain, which this deployment does not have.
+  A production deployment adds port 443 with an ACM certificate and redirects port 80 to it.
+- **One IAM role, the execution role.**
+  order-api calls no AWS API, so there is no task role.
+  The execution role's inline policy names the one image repository, the one log group and the database secret; only `ecr:GetAuthorizationToken` takes `*`, because that action has no resource to scope to.
+- **Redis as a second container in the task**, reached on `localhost`.
+  It holds the HTTP idempotency response cache only; the durable authority is the database constraint (domain-design §4.4), so losing the cache with the task loses nothing that matters.
+- **Migrations and the seed as one-shot tasks**, started with `aws ecs run-task` from task definitions of their own.
+  The database is in a private subnet and cannot be reached from outside the VPC.
+- **No automated deployment.**
+  A deploy job would fail every time the stack has been destroyed; the steps in the README are run by hand.
 
 ## Rationale
 
@@ -78,15 +95,18 @@ The trigger is schedule-based (time box exceeded), not technical; no property of
 
 ## Consequences
 
-- Terraform is the deliverable as much as the running service: VPC, ALB, security groups, IAM roles, ECS, RDS, ECR, and logs are all declared in-repo; `terraform destroy` must leave nothing behind (verified as part of the deployment task).
+- Terraform is the deliverable as much as the running service: VPC, ALB, security groups, the IAM role, ECS, RDS, ECR, and logs are all declared in-repo.
+  `terraform destroy` removes all 35 resources.
+  The tag-based resource search keeps listing deleted resources for a while afterwards, so that nothing is left is checked against each service directly.
 - The deployed system is the synchronous slice only; a reader probing the async design is pointed at local Compose, CI, and ADR-001/ADR-002 — this split (deploy the API, argue the broker) is now explicit and deliberate.
   A consequence to make visible when demoing: with no broker or worker in the cloud, a confirmed order stays `CONFIRMED` (its reservation never runs) and its outbox rows accumulate unsent — the full Saga is shown only against local Compose / CI.
 - Fargate's idle cost (ALB floor) is accepted and bounded by the destroy lifecycle.
-- If the fallback fires, this ADR is amended: status stays Accepted with the App Runner outcome recorded and the Fargate path preserved as the documented growth direction.
+  A 29-minute deployment on 2026-10-20 cost about USD 0.04 in Cost Explorer, more than half of it the load balancer.
+- App Runner stays recorded as the scope reduction available if the ECS surface ever has to shrink; the image and the RDS would carry over unchanged.
 
 ## References
 
-- `docs/design/domain-design.md` §2, §5.4, §7 (public deployment deferral)
+- `docs/design/domain-design.md` §2, §4.4, §5.4, §7 (public deployment deferral, authentication)
 - ADR-001 (production broker assumption), ADR-002 (poller as a resident process)
 - [ECS on Fargate](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html)
 - [App Runner](https://docs.aws.amazon.com/apprunner/latest/dg/what-is-apprunner.html) / [VPC connector](https://docs.aws.amazon.com/apprunner/latest/dg/network-vpc.html)
