@@ -35,8 +35,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version-file: ".python-version"
-      # The seed and the smoke run from the host: both import the two service
-      # packages, and no single image contains both.
+      # The seed and the smoke run from the host: between them they import both
+      # service packages, and no single image contains both.
       - run: uv sync --locked
       # A step of its own, so build time and start-up time are two numbers.
       - run: docker compose build
