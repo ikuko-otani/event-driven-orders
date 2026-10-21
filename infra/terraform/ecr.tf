@@ -7,4 +7,8 @@ resource "aws_ecr_repository" "api" {
 
   # Destroy must succeed while pushed images are still inside
   force_delete = true
+
+  # Tags are commit SHAs, so a second push under one tag is always a mistake;
+  # refusing it keeps a task definition's tag naming the code that runs
+  image_tag_mutability = "IMMUTABLE"
 }
