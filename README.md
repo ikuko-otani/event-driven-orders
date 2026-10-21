@@ -95,7 +95,7 @@ Only the synchronous slice goes there: `order-api` runs as one ECS Fargate task 
 The broker, the pollers and `inventory-worker` stay in local Compose, so an order confirmed on AWS stays `CONFIRMED`.
 
 ```mermaid
-flowchart LR
+flowchart TB
     client(["Client in allowed_cidrs"])
 
     subgraph vpc["VPC"]
